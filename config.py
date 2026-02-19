@@ -47,9 +47,9 @@ POINTS = {
 }
 
 # === Модели Anthropic ===
-MODEL_AGENT = "claude-opus-4-6"      # Мозг агента (function calling)
-MODEL_CHEAP = "claude-haiku-4-5"     # Дешёвые задачи (формат багов, дубли)
-MODEL_VISION = "claude-haiku-4-5"    # Анализ скриншотов (Claude поддерживает vision)
+MODEL_AGENT = "claude-sonnet-4-5-20250929"    # Мозг агента (function calling)
+MODEL_CHEAP = "claude-haiku-4-5-20251001"     # Дешёвые задачи (формат багов, дубли)
+MODEL_VISION = "claude-haiku-4-5-20251001"    # Анализ скриншотов
 
 # === Режим отладки ===
 DEBUG_TOPICS = os.getenv("DEBUG_TOPICS", "0") == "1"
