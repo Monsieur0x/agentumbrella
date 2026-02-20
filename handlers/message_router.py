@@ -5,7 +5,7 @@
 """
 from aiogram import Router, F, Bot
 from aiogram.types import Message
-from config import GROUP_ID, TOPIC_NAMES, TOPIC_IDS, DEBUG_TOPICS
+from config import GROUP_ID, TOPIC_NAMES, TOPIC_IDS, DEBUG_TOPICS, BOT_MODE, OBSERVE_REPLY
 from models.admin import is_admin, is_owner
 from models.tester import get_or_create_tester, get_tester_by_id
 from agent.brain import process_message
@@ -105,6 +105,14 @@ async def handle_group_message(message: Message, bot: Bot):
     if GROUP_ID and message.chat.id != GROUP_ID:
         return
 
+    # === Режим наблюдения: бот молчит, кроме прямого упоминания ===
+    import config
+    if config.BOT_MODE == "observe":
+        bot_info = await _get_bot_info(bot)
+        if is_bot_mentioned(message, bot_info):
+            await message.reply(OBSERVE_REPLY)
+        return
+
     # === Авторегистрация ===
     await get_or_create_tester(
         telegram_id=user.id,
@@ -160,6 +168,20 @@ async def handle_group_message(message: Message, bot: Bot):
 
     # === Отправляем в мозг агента ===
     if not message.text:
+        return
+
+    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    if await _handle_mode_toggle(message, user):
+        return
+    if await _handle_weeek_toggle(message, user):
+        return
+
+    # === Ожидание ввода своего значения награды ===
+    if await _handle_pending_reward_input(message, user):
+        return
+
+    # === Настройка наград ===
+    if await _handle_rewards_settings(message, user):
         return
 
     # Тестеры в группе — только статистика и рейтинг, без Claude API
@@ -247,8 +269,133 @@ async def _handle_draft_task_edit(message: Message, user) -> bool:
     return True
 
 
+_WEEEK_OFF_KEYWORDS = ("отключи вик", "выключи вик", "стоп вик")
+_WEEEK_ON_KEYWORDS = ("включи вик", "запусти вик", "старт вик")
+
+_MODE_OBSERVE_KEYWORDS = ("режим наблюдени", "включи наблюдени", "режим observe", "переключи на наблюдени")
+_MODE_ACTIVE_KEYWORDS = ("рабочий режим", "включи рабочий", "режим актив", "переключи на рабочий")
+
+
+async def _handle_mode_toggle(message: Message, user) -> bool:
+    """Обрабатывает команды владельца для переключения режима бота. Возвращает True если обработано."""
+    if not message.text:
+        return False
+    if not await is_owner(user.id):
+        return False
+
+    import config
+    text = message.text.lower().strip()
+
+    if any(kw in text for kw in _MODE_OBSERVE_KEYWORDS):
+        config.BOT_MODE = "observe"
+        await message.reply("👁 Режим переключён: <b>наблюдение</b>. Бот отвечает только на @упоминания.", parse_mode="HTML")
+        return True
+
+    if any(kw in text for kw in _MODE_ACTIVE_KEYWORDS):
+        config.BOT_MODE = "active"
+        await message.reply("✅ Режим переключён: <b>рабочий</b>. Бот отвечает на все сообщения.", parse_mode="HTML")
+        return True
+
+    return False
+
+
+async def _handle_weeek_toggle(message: Message, user) -> bool:
+    """Обрабатывает команды владельца 'отключи вик' / 'включи вик'. Возвращает True если обработано."""
+    if not message.text:
+        return False
+    if not await is_owner(user.id):
+        return False
+
+    import config
+    text = message.text.lower().strip()
+
+    if any(kw in text for kw in _WEEEK_OFF_KEYWORDS):
+        config.WEEEK_ENABLED = False
+        await message.reply("🔴 Weeek <b>отключён</b>. Баги будут сохраняться без отправки в Weeek.", parse_mode="HTML")
+        return True
+
+    if any(kw in text for kw in _WEEEK_ON_KEYWORDS):
+        config.WEEEK_ENABLED = True
+        await message.reply("🟢 Weeek <b>включён</b>. Баги снова будут отправляться в Weeek.", parse_mode="HTML")
+        return True
+
+    return False
+
+
 _STATS_KEYWORDS = ("статистика", "стата", "мои баллы", "мой рейтинг", "мои очки", "сколько баллов", "мой стат")
 _RATING_KEYWORDS = ("рейтинг", "топ", "таблица", "лидеры", "leaderboard")
+_REWARDS_KEYWORDS = ("настройка наград", "настроить награды", "настройки наград")
+
+# Состояние ожидания ввода своего значения награды: telegram_id → reward_type
+_pending_reward_input: dict[int, str] = {}
+
+
+async def _handle_rewards_settings(message: Message, user) -> bool:
+    """Обрабатывает команду 'настройка наград' для админов/владельцев."""
+    if not message.text:
+        return False
+    text = message.text.lower().strip()
+    if not any(kw in text for kw in _REWARDS_KEYWORDS):
+        return False
+
+    role = await get_role(user.id)
+    if role not in ("admin", "owner"):
+        return False
+
+    from models.settings import get_points_config
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    pts = await get_points_config()
+
+    msg_text = (
+        "⚙️ <b>Настройка наград</b>\n\n"
+        "Текущие значения:\n"
+        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
+        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
+        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
+        "Выберите категорию для изменения:"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
+        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
+        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
+    ])
+
+    await message.answer(msg_text, parse_mode="HTML", reply_markup=keyboard)
+    return True
+
+
+async def _handle_pending_reward_input(message: Message, user) -> bool:
+    """Если пользователь вводит своё значение награды — обрабатываем."""
+    if user.id not in _pending_reward_input:
+        return False
+
+    reward_type = _pending_reward_input.pop(user.id)
+    text = (message.text or "").strip()
+
+    if not text.isdigit() or int(text) <= 0:
+        await message.answer("❌ Введите положительное целое число.")
+        _pending_reward_input[user.id] = reward_type  # вернуть состояние
+        return True
+
+    value = int(text)
+    from models.settings import set_points_value, get_points_config
+
+    await set_points_value(reward_type, value)
+
+    labels = {
+        "bug_accepted": "🐛 Баг",
+        "crash_accepted": "💥 Краш",
+        "game_played": "🎮 Игра",
+    }
+    label = labels.get(reward_type, reward_type)
+    await message.answer(
+        f"✅ {label}: <b>{value}</b> б.",
+        parse_mode="HTML",
+    )
+    await log_info(f"Награда {reward_type} изменена на {value} (@{user.username})")
+    return True
 
 
 async def _handle_tester_dm(message: Message, user) -> bool:
@@ -294,6 +441,12 @@ async def handle_private_message(message: Message, bot: Bot):
 
     user = message.from_user
 
+    # === Режим наблюдения: отвечаем фиксированной фразой ===
+    import config
+    if config.BOT_MODE == "observe":
+        await message.answer(OBSERVE_REPLY)
+        return
+
     # Авторегистрация
     await get_or_create_tester(
         telegram_id=user.id,
@@ -314,6 +467,20 @@ async def handle_private_message(message: Message, bot: Bot):
                 "Багрепорты отправляй в топик <b>Баги</b> с хештегом <b>#баг</b>.",
                 parse_mode="HTML"
             )
+        return
+
+    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    if await _handle_mode_toggle(message, user):
+        return
+    if await _handle_weeek_toggle(message, user):
+        return
+
+    # === Ожидание ввода своего значения награды ===
+    if await _handle_pending_reward_input(message, user):
+        return
+
+    # === Настройка наград ===
+    if await _handle_rewards_settings(message, user):
         return
 
     # Проверяем: есть ли черновик задания для редактирования

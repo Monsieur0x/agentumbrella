@@ -26,6 +26,47 @@ from database import get_db
 router = Router()
 
 
+# ─────────────────────────────────────────────
+#  Выбор режима работы при запуске
+# ─────────────────────────────────────────────
+
+@router.callback_query(F.data.in_({"mode_active", "mode_observe"}))
+async def handle_mode_select(callback: CallbackQuery):
+    """Владелец выбирает режим работы бота (при запуске или в рантайме)."""
+    if not await is_owner(callback.from_user.id):
+        await callback.answer("Только владелец может выбирать режим", show_alert=True)
+        return
+
+    import config
+
+    mode = callback.data  # "mode_active" или "mode_observe"
+    config.BOT_MODE = mode.replace("mode_", "")  # "active" или "observe"
+
+    labels = {"active": "✅ Рабочий режим", "observe": "👁 Режим наблюдения"}
+    label = labels.get(config.BOT_MODE, config.BOT_MODE)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Рабочий режим", callback_data="mode_active"),
+            InlineKeyboardButton(text="👁 Режим наблюдения", callback_data="mode_observe"),
+        ]
+    ])
+    await callback.message.edit_text(
+        f"🟢 <b>Umbrella Bot</b>\n\n"
+        f"Режим: <b>{label}</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    await callback.answer(f"Выбран: {label}")
+
+    # При первом запуске — разблокируем старт
+    try:
+        from bot import mode_selected_event
+        mode_selected_event.set()
+    except ImportError:
+        pass
+
+
 async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     """Общая логика принятия бага: статус, баллы, points_log, счётчики. Возвращает начисленные баллы."""
     points = bug["points_awarded"]
@@ -212,12 +253,14 @@ async def handle_bug_reject(callback: CallbackQuery):
 
 async def _show_board_selection(callback: CallbackQuery, bug_id: int):
     """Редактирует сообщение, подставляя кнопки выбора доски Weeek."""
+    import config
     from services.weeek_service import get_cached_boards
 
-    boards = get_cached_boards()
+    boards = get_cached_boards() if config.WEEEK_ENABLED else []
     if not boards:
+        weeek_note = "Weeek отключён" if not config.WEEEK_ENABLED else "Weeek не настроен"
         await callback.message.edit_text(
-            (callback.message.text or "") + "\n\n✅ <b>Подтверждён</b> (Weeek не настроен)",
+            (callback.message.text or "") + f"\n\n✅ <b>Подтверждён</b> ({weeek_note})",
             parse_mode="HTML",
             reply_markup=None,
         )
@@ -344,10 +387,23 @@ async def _create_weeek_task_and_finish(
     if result.get("success"):
         task_id = str(result.get("task_id", ""))
 
+        # Определяем имя колонки
+        col_name = ""
+        if col_id:
+            from services.weeek_service import get_board_columns as _get_cols
+            try:
+                cols = await _get_cols(board_id)
+                for c in cols:
+                    if c.get("id") == col_id:
+                        col_name = c.get("name", "")
+                        break
+            except Exception:
+                pass
+
         db = await get_db()
         await db.execute(
-            "UPDATE bugs SET weeek_task_id = ? WHERE id = ?",
-            (task_id, bug_id),
+            "UPDATE bugs SET weeek_task_id = ?, weeek_board_name = ?, weeek_column_name = ? WHERE id = ?",
+            (task_id, board_name, col_name, bug_id),
         )
         await db.commit()
 
@@ -585,6 +641,159 @@ async def handle_rating_cancel(callback: CallbackQuery):
         except Exception:
             pass
     await callback.answer("Публикация отменена")
+
+
+# ─────────────────────────────────────────────
+#  НАСТРОЙКА НАГРАД
+# ─────────────────────────────────────────────
+
+_REWARD_LABELS = {
+    "bug_accepted": "🐛 Баг",
+    "crash_accepted": "💥 Краш",
+    "game_played": "🎮 Игра",
+}
+
+
+@router.callback_query(F.data.startswith("reward_set:"))
+async def handle_reward_set(callback: CallbackQuery):
+    """Админ/владелец выбрал категорию награды — показываем варианты значений."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может настраивать награды", show_alert=True)
+        return
+
+    reward_type = callback.data.split(":")[1]
+    if reward_type not in _REWARD_LABELS:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+
+    from models.settings import get_points_config
+    pts = await get_points_config()
+    current = pts.get(reward_type, 0)
+    label = _REWARD_LABELS[reward_type]
+
+    rows = []
+    row = []
+    for val in [1, 2, 3, 4, 5]:
+        marker = " ✓" if val == current else ""
+        row.append(InlineKeyboardButton(
+            text=f"{val}{marker}",
+            callback_data=f"reward_val:{reward_type}:{val}",
+        ))
+    rows.append(row)
+    rows.append([InlineKeyboardButton(
+        text="✏️ Своё значение",
+        callback_data=f"reward_custom:{reward_type}",
+    )])
+    rows.append([InlineKeyboardButton(
+        text="⬅ Назад",
+        callback_data="rewards_menu",
+    )])
+
+    await callback.message.edit_text(
+        f"⚙️ <b>{label}</b>\n\n"
+        f"Текущее значение: <b>{current}</b> б.\n\n"
+        f"Выберите новое значение:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("reward_val:"))
+async def handle_reward_val(callback: CallbackQuery):
+    """Админ/владелец выбрал конкретное значение награды."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может настраивать награды", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    reward_type = parts[1]
+    value = int(parts[2])
+
+    if reward_type not in _REWARD_LABELS:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+
+    from models.settings import set_points_value, get_points_config
+    await set_points_value(reward_type, value)
+
+    label = _REWARD_LABELS[reward_type]
+
+    # Показываем обновлённое меню наград
+    pts = await get_points_config()
+    msg_text = (
+        f"✅ {label} установлен: <b>{value}</b> б.\n\n"
+        "⚙️ <b>Настройка наград</b>\n\n"
+        "Текущие значения:\n"
+        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
+        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
+        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
+        "Выберите категорию для изменения:"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
+        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
+        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
+    ])
+
+    await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer(f"{label}: {value} б.")
+    await log_info(f"Награда {reward_type} изменена на {value} (@{callback.from_user.username})")
+
+
+@router.callback_query(F.data.startswith("reward_custom:"))
+async def handle_reward_custom(callback: CallbackQuery):
+    """Админ/владелец хочет ввести своё значение — ставим ожидание."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может настраивать награды", show_alert=True)
+        return
+
+    reward_type = callback.data.split(":")[1]
+    if reward_type not in _REWARD_LABELS:
+        await callback.answer("Неизвестная категория", show_alert=True)
+        return
+
+    from handlers.message_router import _pending_reward_input
+    _pending_reward_input[callback.from_user.id] = reward_type
+
+    label = _REWARD_LABELS[reward_type]
+    await callback.message.edit_text(
+        f"✏️ <b>{label}</b>\n\n"
+        f"Введите количество баллов (положительное целое число):",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rewards_menu")
+async def handle_rewards_menu(callback: CallbackQuery):
+    """Возврат в главное меню настройки наград."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может настраивать награды", show_alert=True)
+        return
+
+    from models.settings import get_points_config
+    pts = await get_points_config()
+
+    msg_text = (
+        "⚙️ <b>Настройка наград</b>\n\n"
+        "Текущие значения:\n"
+        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
+        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
+        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
+        "Выберите категорию для изменения:"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
+        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
+        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
+    ])
+
+    await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=keyboard)
+    await callback.answer()
 
 
 # ─────────────────────────────────────────────

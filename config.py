@@ -76,3 +76,11 @@ MAX_HISTORY = {
 MAX_USERS_CACHE = 200
 DUPLICATE_CHECK_LIMIT = 50
 SEARCH_BUGS_LIMIT = 20
+
+# === Режим работы бота (выбирается владельцем при запуске) ===
+BOT_MODE = "active"  # "active" | "observe"
+
+OBSERVE_REPLY = "Пока что я только наблюдаю за вами."
+
+# === Weeek интеграция (переключается владельцем в рантайме) ===
+WEEEK_ENABLED = True

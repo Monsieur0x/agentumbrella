@@ -6,7 +6,7 @@ from models.tester import (
     get_tester_by_username, get_all_testers, increment_warnings,
     decrement_warnings, reset_warnings, reset_all_warnings
 )
-from models.bug import get_bug, mark_duplicate, get_bug_stats, get_recent_bugs
+from models.bug import get_bug, mark_duplicate, get_bug_stats, get_recent_bugs, delete_bug, delete_all_bugs, clear_weeek_task_id
 from models.admin import add_admin, remove_admin, get_all_admins
 from services.points_service import award_points, award_points_bulk
 from services.rating_service import get_rating
@@ -45,8 +45,8 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: 
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 
-_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "publish_rating", "refresh_testers"}
-_OWNER_TOOLS = {"manage_admin"}
+_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers"}
+_OWNER_TOOLS = {"manage_admin", "switch_mode"}
 
 
 async def _check_permission(name: str, caller_id: int) -> str | None:
@@ -192,10 +192,16 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
         return {"success": True, "bug_id": args["bug_id"], "status": "duplicate"}
 
     elif name == "search_bugs":
-        return await _search_bugs(args["query"], args.get("tester"))
+        return await _search_bugs(args.get("query"), args.get("tester"), args.get("bug_id"), args.get("status"))
+
+    elif name == "delete_bug":
+        return await _delete_bug(args.get("bug_id"), args["target"], args.get("delete_all", False))
 
     elif name == "refresh_testers":
         return await _refresh_testers()
+
+    elif name == "switch_mode":
+        return await _switch_mode(args["mode"])
 
     else:
         return {"error": f"Неизвестная функция: {name}"}
@@ -674,17 +680,46 @@ async def _refresh_testers() -> dict:
     }
 
 
-async def _search_bugs(query: str, tester: str = None) -> dict:
+async def _search_bugs(query: str = None, tester: str = None,
+                       bug_id: int = None, status: str = None) -> dict:
     db = await get_db()
-    sql = """SELECT b.id, b.title, b.type, b.status, b.created_at, t.username
+
+    # Поиск по конкретному ID
+    if bug_id:
+        sql = """SELECT b.*, t.username
+                 FROM bugs b
+                 JOIN testers t ON b.tester_id = t.telegram_id
+                 WHERE b.id = ?"""
+        cursor = await db.execute(sql, (bug_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return {"error": f"Баг #{bug_id} не найден"}
+        bug = dict(row)
+        if bug.get("username"):
+            bug["username"] = _tag(bug["username"])
+        return {"count": 1, "bugs": [bug]}
+
+    # Поиск по фильтрам
+    sql = """SELECT b.id, b.title, b.type, b.status, b.created_at,
+                    b.script_name, b.youtube_link,
+                    b.weeek_task_id, b.weeek_board_name, b.weeek_column_name,
+                    t.username
              FROM bugs b
              JOIN testers t ON b.tester_id = t.telegram_id
-             WHERE (b.title LIKE ? OR b.description LIKE ?)"""
-    params = [f"%{query}%", f"%{query}%"]
+             WHERE 1=1"""
+    params = []
+
+    if query:
+        sql += " AND (b.title LIKE ? OR b.description LIKE ? OR b.script_name LIKE ?)"
+        params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
 
     if tester:
         sql += " AND LOWER(t.username) = LOWER(?)"
         params.append(_normalize_username(tester))
+
+    if status and status != "all":
+        sql += " AND b.status = ?"
+        params.append(status)
 
     sql += f" ORDER BY b.id DESC LIMIT {SEARCH_BUGS_LIMIT}"
     cursor = await db.execute(sql, params)
@@ -696,7 +731,108 @@ async def _search_bugs(query: str, tester: str = None) -> dict:
             bug["username"] = _tag(bug["username"])
         bugs.append(bug)
     return {
-        "query": query,
+        "query": query or "",
+        "tester": tester or "",
+        "status": status or "all",
         "count": len(bugs),
         "bugs": bugs
     }
+
+
+async def _delete_bug(bug_id: int = None, target: str = "both",
+                      do_delete_all: bool = False) -> dict:
+    """Удаляет баг(и) из БД и/или Weeek."""
+
+    # === Удаление ВСЕХ багов ===
+    if do_delete_all:
+        if target == "db_only":
+            count = await delete_all_bugs()
+            await log_info(f"Удалены все баги из БД ({count} шт.)")
+            return {"success": True, "deleted_count": count, "target": "db_only"}
+        elif target in ("weeek_only", "both"):
+            # Сначала удаляем из Weeek все баги у которых есть weeek_task_id
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT id, weeek_task_id FROM bugs WHERE weeek_task_id IS NOT NULL AND weeek_task_id != ''"
+            )
+            rows = await cursor.fetchall()
+            weeek_deleted = 0
+            weeek_errors = 0
+            if rows:
+                from services.weeek_service import delete_task as weeek_delete
+                for row in rows:
+                    r = await weeek_delete(str(row["weeek_task_id"]))
+                    if r.get("success"):
+                        weeek_deleted += 1
+                    else:
+                        weeek_errors += 1
+
+            result = {
+                "success": True,
+                "target": target,
+                "weeek_deleted": weeek_deleted,
+                "weeek_errors": weeek_errors,
+            }
+
+            if target == "both":
+                count = await delete_all_bugs()
+                result["db_deleted"] = count
+                await log_info(f"Удалены все баги: БД ({count}), Weeek ({weeek_deleted})")
+            else:
+                # weeek_only — очищаем ссылки
+                await db.execute(
+                    "UPDATE bugs SET weeek_task_id = NULL, weeek_board_name = NULL, weeek_column_name = NULL"
+                )
+                await db.commit()
+                await log_info(f"Удалены все баги из Weeek ({weeek_deleted})")
+            return result
+
+    # === Удаление одного бага ===
+    if not bug_id:
+        return {"error": "Не указан bug_id"}
+
+    bug = await get_bug(bug_id)
+    if not bug:
+        return {"error": f"Баг #{bug_id} не найден"}
+
+    result = {"bug_id": bug_id, "target": target}
+
+    weeek_task_id = bug.get("weeek_task_id")
+
+    # Удаление из Weeek
+    if target in ("weeek_only", "both"):
+        if not weeek_task_id:
+            result["weeek"] = "не был отправлен в Weeek"
+        else:
+            from services.weeek_service import delete_task as weeek_delete
+            weeek_result = await weeek_delete(weeek_task_id)
+            if weeek_result.get("success"):
+                result["weeek"] = "удалён из Weeek"
+                if target == "weeek_only":
+                    await clear_weeek_task_id(bug_id)
+            else:
+                result["weeek"] = f"ошибка Weeek: {weeek_result.get('error', '?')}"
+
+    # Удаление из БД
+    if target in ("db_only", "both"):
+        deleted = await delete_bug(bug_id)
+        result["db"] = "удалён из БД" if deleted else "не удалось удалить из БД"
+
+    result["success"] = True
+    await log_info(f"Баг #{bug_id} удалён ({target})")
+    return result
+
+
+async def _switch_mode(mode: str) -> dict:
+    """Переключает режим работы бота."""
+    import config
+
+    if mode not in ("active", "observe"):
+        return {"error": f"Неизвестный режим: {mode}"}
+
+    config.BOT_MODE = mode
+    labels = {"active": "✅ Рабочий режим", "observe": "👁 Режим наблюдения"}
+    label = labels[mode]
+
+    await log_info(f"Режим бота переключён: {label}")
+    return {"success": True, "mode": mode, "label": label}

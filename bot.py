@@ -7,6 +7,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import BOT_TOKEN, OWNER_TELEGRAM_ID, GROUP_ID, DEBUG_TOPICS
 from database import init_db
@@ -14,6 +15,9 @@ from models.admin import init_owner
 from handlers.message_router import router as message_router
 from handlers.callback_handler import router as callback_router
 from utils.logger import set_bot
+
+# Event для ожидания выбора режима владельцем
+mode_selected_event = asyncio.Event()
 
 
 async def main():
@@ -70,21 +74,28 @@ async def main():
         from config import TOPIC_IDS
         print(f"📋 Топики: {TOPIC_IDS}")
 
-    print("\n🟢 Бот запущен! Ожидание сообщений...\n")
-
-    # Уведомляем владельца
+    # === Уведомление владельца + клавиатура смены режима ===
     try:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Рабочий режим", callback_data="mode_active"),
+                InlineKeyboardButton(text="👁 Режим наблюдения", callback_data="mode_observe"),
+            ]
+        ])
         await bot.send_message(
             OWNER_TELEGRAM_ID,
             "🟢 <b>Umbrella Bot запущен!</b>\n\n"
             f"Бот: @{bot_info.username}\n"
-            f"Режим: {'🔍 Отладка топиков' if DEBUG_TOPICS else '✅ Рабочий'}\n\n"
-            "Напишите мне в группе или в ЛС."
+            f"Режим: <b>✅ Рабочий</b>\n\n"
+            "Переключить режим можно кнопкой ниже или командой в чате:",
+            reply_markup=keyboard,
         )
-    except Exception:
-        pass  # Если не получилось — не страшно
+    except Exception as e:
+        print(f"⚠️ Не удалось отправить сообщение владельцу: {e}")
 
-    # === Запуск ===
+    print(f"\n🟢 Бот запущен! Режим: ✅ Рабочий\n")
+
+    # Запускаем polling
     await dp.start_polling(bot)
 
 

@@ -56,6 +56,32 @@ async def get_recent_bugs(limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def delete_bug(bug_id: int) -> bool:
+    """Удаляет баг из БД. Возвращает True если удалён."""
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM bugs WHERE id = ?", (bug_id,))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def delete_all_bugs() -> int:
+    """Удаляет все баги из БД. Возвращает количество удалённых."""
+    db = await get_db()
+    cursor = await db.execute("DELETE FROM bugs")
+    await db.commit()
+    return cursor.rowcount
+
+
+async def clear_weeek_task_id(bug_id: int):
+    """Очищает weeek_task_id у бага (после удаления из Weeek)."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE bugs SET weeek_task_id = NULL, weeek_board_name = NULL, weeek_column_name = NULL WHERE id = ?",
+        (bug_id,)
+    )
+    await db.commit()
+
+
 async def get_bug_stats(period: str = "all", bug_type: str = "all") -> dict:
     """Статистика по багам за период."""
     db = await get_db()

@@ -179,6 +179,33 @@ async def create_task(title: str, description: str, bug_type: str = "bug",
     }
 
 
+async def delete_task(task_id: str) -> dict:
+    """DELETE /tm/tasks/{task_id} — удаляет задачу из Weeek."""
+    if not WEEEK_API_KEY:
+        return {"error": "WEEEK_API_KEY не задан", "success": False}
+    if not task_id:
+        return {"error": "task_id пустой", "success": False}
+
+    url = f"{BASE_URL}/tm/tasks/{task_id}"
+    client = _get_client()
+
+    try:
+        response = await client.delete(url)
+        response.raise_for_status()
+        # Weeek может вернуть 200 с JSON или 204 без тела
+        if response.status_code == 204 or not response.content:
+            return {"success": True, "task_id": task_id}
+        result = response.json()
+        return {"success": result.get("success", True), "task_id": task_id}
+    except httpx.HTTPStatusError as e:
+        error_text = e.response.text[:200] if e.response.text else str(e.response.status_code)
+        print(f"❌ Weeek DELETE task {task_id}: {e.response.status_code} — {error_text}")
+        return {"success": False, "error": f"HTTP {e.response.status_code}: {error_text}"}
+    except Exception as e:
+        print(f"❌ Weeek DELETE task ошибка: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def setup_weeek() -> dict:
     """Инициализация: находит проект и кэширует доски."""
     global WEEEK_PROJECT_ID, WEEEK_BOARDS

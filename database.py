@@ -78,6 +78,12 @@ async def init_db():
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
 
+            -- Настройки (награды и т.д.)
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             -- Задания
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +111,8 @@ async def init_db():
             ("youtube_link", "TEXT"),
             ("file_id", "TEXT"),
             ("file_type", "TEXT"),
+            ("weeek_board_name", "TEXT"),
+            ("weeek_column_name", "TEXT"),
         ]
         for col_name, col_type in new_bug_columns:
             try:

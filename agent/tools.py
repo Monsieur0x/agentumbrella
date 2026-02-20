@@ -270,14 +270,55 @@ ALL_TOOLS = [
     },
     {
         "name": "search_bugs",
-        "description": "Поиск среди багов по ключевым словам или тестеру.",
+        "description": "Поиск багов: по ID, ключевым словам, тестеру, статусу. Возвращает детальную информацию включая доску и колонку Weeek. Вызывай когда спрашивают про конкретный баг, список багов, баги тестера, статистику по багам с деталями.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Поисковый запрос"},
-                "tester": {"type": "string", "description": "Фильтр по тестеру (опционально)"}
+                "bug_id": {"type": "integer", "description": "ID конкретного бага (если ищем по номеру)"},
+                "query": {"type": "string", "description": "Поисковый запрос по тексту (опционально)"},
+                "tester": {"type": "string", "description": "Фильтр по тестеру (опционально)"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "accepted", "rejected", "duplicate", "all"],
+                    "description": "Фильтр по статусу (опционально, по умолчанию all)"
+                }
             },
-            "required": ["query"]
+            "required": []
+        }
+    },
+    {
+        "name": "delete_bug",
+        "description": "Удалить баг(и) из БД и/или из Weeek. ТОЛЬКО ДЛЯ АДМИНОВ. Можно удалить один баг по ID или все баги сразу (delete_all=true). target: db_only — только из базы, weeek_only — только из Weeek, both — отовсюду. Когда просят удалить ВСЕ баги — используй delete_all=true, target=db_only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bug_id": {"type": "integer", "description": "ID бага для удаления (не нужен если delete_all=true)"},
+                "target": {
+                    "type": "string",
+                    "enum": ["db_only", "weeek_only", "both"],
+                    "description": "Откуда удалять: db_only — только БД, weeek_only — только Weeek, both — отовсюду"
+                },
+                "delete_all": {
+                    "type": "boolean",
+                    "description": "Удалить ВСЕ баги (true). По умолчанию false."
+                }
+            },
+            "required": ["target"]
+        }
+    },
+    {
+        "name": "switch_mode",
+        "description": "Переключить режим работы бота: active (рабочий — отвечает на все сообщения) или observe (наблюдение — отвечает только на @упоминания). ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["active", "observe"],
+                    "description": "Режим: active — рабочий, observe — наблюдение"
+                }
+            },
+            "required": ["mode"]
         }
     },
 ]
@@ -301,7 +342,9 @@ TOOL_KEYWORDS: dict[str, list[str]] = {
     "refresh_testers":     [r"обнови\s+(список|тестер)", r"синхрон", r"актуализ", r"обновить\s+(список|тестер)"],
     "manage_admin":        [r"админ", r"добав\w+\s+админ", r"удал\w+\s+админ"],
     "mark_bug_duplicate":  [r"дубл", r"дубликат", r"помет\w+\s+дубл"],
-    "search_bugs":         [r"найди\s+баг", r"поиск\s+баг", r"искать\s+баг", r"баг\w*\s+по", r"найди\s+краш"],
+    "search_bugs":         [r"найди\s+баг", r"поиск\s+баг", r"искать\s+баг", r"баг\w*\s+по", r"найди\s+краш", r"баг\s*#?\d+", r"покажи\s+баг", r"список\s+баг", r"баги\s+(от|тестер|по)", r"принят\w+\s+баг", r"отклон\w+\s+баг", r"все\s+баг"],
+    "delete_bug":          [r"удал\w*\s+баг", r"удал\w*\s+краш", r"убери\s+баг", r"снес\w*\s+баг", r"удал\w*\s+из\s+(бд|вик|weeek|базы)"],
+    "switch_mode":         [r"режим", r"наблюдени", r"переключ\w*\s+режим", r"рабоч\w+\s+режим", r"observe"],
 }
 
 _TOOL_BY_NAME = {t["name"]: t for t in ALL_TOOLS}

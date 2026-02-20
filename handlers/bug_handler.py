@@ -17,7 +17,7 @@ import html
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from models.tester import get_or_create_tester
 from models.bug import create_bug, get_bug
-from config import POINTS, OWNER_TELEGRAM_ID
+from config import OWNER_TELEGRAM_ID
 from utils.logger import log_info
 from database import get_db
 
@@ -79,7 +79,9 @@ async def handle_bug_report(message: Message):
         return
 
     await get_or_create_tester(user.id, user.username, user.full_name)
-    points = POINTS["bug_accepted"]
+    from models.settings import get_points_config
+    pts = await get_points_config()
+    points = pts["bug_accepted"]
 
     # --- Проверка 2: нет файла → спрашиваем ---
     if not file_id:
