@@ -81,9 +81,49 @@ async def find_columns_from_tasks(project_id: int) -> dict:
     return board_columns
 
 
+async def get_board_columns(board_id: int) -> list:
+    """Возвращает список колонок доски. Пробует несколько вариантов эндпоинта."""
+    # Вариант 1: tm/board-columns?boardId=
+    result = await _request("GET", f"tm/board-columns?boardId={board_id}")
+    cols = result.get("boardColumns") or result.get("columns") or []
+    if cols:
+        return cols
+    # Вариант 2: tm/boards/{board_id} — поле columns внутри объекта доски
+    result = await _request("GET", f"tm/boards/{board_id}")
+    board = result.get("board") or result.get("data") or {}
+    return board.get("columns") or board.get("boardColumns") or []
+
+
 def get_cached_boards() -> list:
     """Возвращает кэшированный список досок."""
     return WEEEK_BOARDS
+
+
+async def upload_attachment(task_id: str, file_bytes: bytes, filename: str) -> dict:
+    """POST /tm/tasks/{task_id}/attachments — загружает файл-вложение к задаче."""
+    if not WEEEK_API_KEY:
+        return {"error": "WEEEK_API_KEY не задан", "success": False}
+
+    url = f"{BASE_URL}/tm/tasks/{task_id}/attachments"
+    headers = {
+        "Authorization": f"Bearer {WEEEK_API_KEY}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                headers=headers,
+                files={"files[]": (filename, file_bytes)},
+            )
+            response.raise_for_status()
+            return {"success": True}
+    except httpx.HTTPStatusError as e:
+        print(f"❌ Weeek upload {e.response.status_code}: {e.response.text[:200]}")
+        return {"success": False, "error": f"HTTP {e.response.status_code}"}
+    except Exception as e:
+        print(f"❌ Weeek upload ошибка: {e}")
+        return {"success": False, "error": str(e)}
 
 
 async def create_task(title: str, description: str, bug_type: str = "bug",

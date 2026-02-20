@@ -10,12 +10,20 @@ from models.admin import add_admin, remove_admin, get_all_admins
 from services.points_service import award_points, award_points_bulk
 from services.rating_service import get_rating
 from database import get_db
-from utils.logger import log_info, log_admin
+from utils.logger import log_info, log_admin, get_bot
 
 
 def _normalize_username(username: str) -> str:
     """Убирает @ в начале username, если есть."""
     return username.lstrip("@") if username else ""
+
+
+def _tag(username: str) -> str:
+    """Форматирует username с @ для кликабельности в Telegram."""
+    if not username:
+        return "?"
+    clean = username.lstrip("@")
+    return f"@{clean}"
 
 
 async def execute_tool(name: str, arguments: str, caller_id: int = None) -> str:
@@ -35,8 +43,31 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None) -> str:
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 
+_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "create_task", "mark_bug_duplicate", "search_bugs", "publish_rating"}
+_OWNER_TOOLS = {"manage_admin"}
+
+
+async def _check_permission(name: str, caller_id: int) -> str | None:
+    """Возвращает сообщение об ошибке если нет прав, иначе None."""
+    if name not in _ADMIN_TOOLS and name not in _OWNER_TOOLS:
+        return None
+    from models.admin import is_admin, is_owner
+    if name in _OWNER_TOOLS:
+        if not await is_owner(caller_id or 0):
+            return "Только для владельца"
+    if name in _ADMIN_TOOLS:
+        if not (await is_admin(caller_id or 0) or await is_owner(caller_id or 0)):
+            return "Недостаточно прав"
+    return None
+
+
 async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
     """Маршрутизация вызовов функций."""
+
+    # === Проверка прав ===
+    perm_error = await _check_permission(name, caller_id)
+    if perm_error:
+        return {"error": perm_error}
 
     # === АНАЛИТИКА ===
     if name == "get_tester_stats":
@@ -50,6 +81,9 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
 
     elif name == "compare_testers":
         return await _compare_testers(args["username1"], args["username2"])
+
+    elif name == "get_testers_list":
+        return await _get_testers_list(args.get("include_inactive", False))
 
     elif name == "get_bug_stats":
         return await _get_bug_stats_handler(args.get("period", "all"), args.get("type", "all"))
@@ -80,13 +114,26 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
         return await _create_task(args["brief"], caller_id)
 
     # === РЕЙТИНГ ===
-    elif name == "update_rating":
+    elif name == "get_rating":
         data = await get_rating(args.get("top_count", 0))
-        # Публикуем в топик
-        from services.rating_service import publish_rating_to_topic
-        from utils.logger import _bot
-        if _bot:
-            await publish_rating_to_topic(_bot, data)
+        from services.rating_service import format_rating_message
+        data["formatted_message"] = format_rating_message(data)
+        return data
+
+    elif name == "publish_rating":
+        data = await get_rating(args.get("top_count", 0))
+        comment = args.get("comment", "")
+        from services.rating_service import publish_rating_to_topic, format_rating_message
+        bot = get_bot()
+        if bot:
+            msg_id = await publish_rating_to_topic(bot, data, comment)
+            data["published"] = bool(msg_id)
+        else:
+            data["published"] = False
+        data["formatted_message"] = format_rating_message(data)
+        if comment:
+            data["formatted_message"] += f"\n\n{comment}"
+        await log_admin("Рейтинг опубликован в топик «Топ»")
         return data
 
     # === АДМИНЫ ===
@@ -108,12 +155,34 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
 
 # === Реализации функций ===
 
+async def _get_testers_list(include_inactive: bool = False) -> dict:
+    from models.admin import get_all_admins
+    testers = await get_all_testers(active_only=not include_inactive)
+    admins = await get_all_admins()
+    admin_ids = {a["telegram_id"] for a in admins}
+    # Исключаем админов и владельца — показываем только тестеров
+    testers = [t for t in testers if t["telegram_id"] not in admin_ids]
+    return {
+        "total": len(testers),
+        "testers": [
+            {
+                "username": _tag(t["username"]),
+                "full_name": t["full_name"],
+                "total_points": t["total_points"],
+                "warnings_count": t["warnings_count"],
+                "is_active": t["is_active"],
+            }
+            for t in testers
+        ]
+    }
+
+
 async def _get_tester_stats(username: str) -> dict:
     tester = await get_tester_by_username(_normalize_username(username))
     if not tester:
         return {"error": f"Тестер @{_normalize_username(username)} не найден"}
     return {
-        "username": tester["username"],
+        "username": _tag(tester["username"]),
         "full_name": tester["full_name"],
         "total_points": tester["total_points"],
         "total_bugs": tester["total_bugs"],
@@ -142,7 +211,7 @@ async def _get_team_stats(period: str) -> dict:
         "total_games": total_games,
         "bugs_stats": bugs,
         "top_3": [
-            {"username": t["username"], "points": t["total_points"],
+            {"username": _tag(t["username"]), "points": t["total_points"],
              "bugs": t["total_bugs"], "games": t["total_games"]}
             for t in top3
         ],
@@ -169,7 +238,7 @@ async def _get_inactive_testers(days: int) -> dict:
             "days": days,
             "inactive_count": len(rows),
             "testers": [
-                {"username": r["username"], "full_name": r["full_name"],
+                {"username": _tag(r["username"]), "full_name": r["full_name"],
                  "last_activity": r["last_activity"]}
                 for r in rows
             ]
@@ -188,11 +257,11 @@ async def _compare_testers(u1: str, u2: str) -> dict:
 
     return {
         "tester_1": {
-            "username": t1["username"], "points": t1["total_points"],
+            "username": _tag(t1["username"]), "points": t1["total_points"],
             "bugs": t1["total_bugs"], "crashes": t1["total_crashes"], "games": t1["total_games"],
         },
         "tester_2": {
-            "username": t2["username"], "points": t2["total_points"],
+            "username": _tag(t2["username"]), "points": t2["total_points"],
             "bugs": t2["total_bugs"], "crashes": t2["total_crashes"], "games": t2["total_games"],
         }
     }
@@ -221,17 +290,35 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
 
     await log_admin(f"Предупреждение @{tester['username']}: {reason} ({new_count}/3)")
 
-    # Уведомляем тестера в ЛС
-    from utils.logger import _bot
-    if _bot:
+    # Деактивация при 3 предупреждениях
+    deactivated = False
+    if new_count >= 3:
+        db2 = await get_db()
         try:
-            await _bot.send_message(
+            await db2.execute(
+                "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
+                (tester["telegram_id"],)
+            )
+            await db2.commit()
+        finally:
+            await db2.close()
+        deactivated = True
+        await log_admin(f"Тестер @{tester['username']} деактивирован (3/3 предупреждений)")
+
+    # Уведомляем тестера в ЛС
+    bot = get_bot()
+    if bot:
+        try:
+            warn_text = (
+                f"⚠️ <b>Предупреждение</b>\n\n"
+                f"Причина: {reason}\n"
+                f"Это предупреждение <b>{new_count} из 3</b>."
+            )
+            if deactivated:
+                warn_text += "\n\n🚫 <b>Вы деактивированы.</b> Обратитесь к администрации."
+            await bot.send_message(
                 chat_id=tester["telegram_id"],
-                text=(
-                    f"⚠️ <b>Предупреждение</b>\n\n"
-                    f"Причина: {reason}\n"
-                    f"Это предупреждение <b>{new_count} из 3</b>."
-                ),
+                text=warn_text,
                 parse_mode="HTML"
             )
         except Exception:
@@ -239,19 +326,21 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
 
     return {
         "success": True,
-        "username": tester["username"],
+        "username": _tag(tester["username"]),
         "reason": reason,
         "warnings_total": new_count,
         "max_warnings": 3,
+        "deactivated": deactivated,
         "telegram_id": tester["telegram_id"],
     }
 
 
 async def _create_task(brief: str, admin_id: int) -> dict:
-    """Создаёт задание: расширяет через ИИ и публикует в топик «Задания»."""
+    """Создаёт черновик задания: расширяет через ИИ и отправляет на подтверждение."""
+    import html as html_module
     import anthropic
-    from config import ANTHROPIC_API_KEY, MODEL_CHEAP, GROUP_ID, TOPIC_IDS
-    from utils.logger import _bot
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from config import ANTHROPIC_API_KEY, MODEL_CHEAP
 
     # Расширяем задание через ИИ
     full_text = brief
@@ -262,9 +351,21 @@ async def _create_task(brief: str, admin_id: int) -> dict:
             messages=[{
                 "role": "user",
                 "content": (
-                    "Ты — менеджер QA. Расширь краткое задание в подробную инструкцию для тестировщиков мобильной игры. "
-                    "Укажи: что тестировать, на что обратить внимание, какие сценарии проверить. "
-                    "Стиль: чёткий, профессиональный, с эмодзи. Пиши на русском. Не более 15 строк.\n\n"
+                    "Ты — координатор тестирования Umbrella, чита для Dota 2. "
+                    "Пиши как координатор в чате, а не как менеджер с ТЗ.\n\n"
+                    "Стиль:\n"
+                    "- Коротко: что делать, где делать, куда скидывать баги\n"
+                    "- Новую/неочевидную функцию поясни одним предложением — не больше\n"
+                    "- Можно обращаться ко всем сразу (\"зайдите\", \"проверьте\", \"потыкайте\")\n"
+                    "- Указывай конкретику: герой, аспект, шард, режим (турбо/лобби/паблик), бета или паблик билд\n"
+                    "- Формат багрепорта — только если он важен (видео, debug.log, краш-лог, matchID)\n"
+                    "- Два-четыре предложения — норма. Длиннее — только если реально нужно расписать условия\n"
+                    "- НЕ используй HTML-теги и markdown. Только plain text и эмодзи\n\n"
+                    "Правила:\n"
+                    "- Только функционал, реальный для чита Dota 2\n"
+                    "- Названия героев, скиллов, предметов — как в игре\n"
+                    "- Не выдумывай функции, которые не упомянуты\n"
+                    "- Пиши задание строго по тому, что указано. Не додумывай лишнего\n\n"
                     f"Краткое задание: {brief}"
                 ),
             }],
@@ -274,11 +375,11 @@ async def _create_task(brief: str, admin_id: int) -> dict:
     except Exception as e:
         print(f"⚠️ Не удалось расширить задание: {e}")
 
-    # Сохраняем в базу
+    # Сохраняем в базу как черновик
     db = await get_db()
     try:
         cursor = await db.execute(
-            "INSERT INTO tasks (admin_id, brief, full_text) VALUES (?, ?, ?)",
+            "INSERT INTO tasks (admin_id, brief, full_text, status) VALUES (?, ?, ?, 'draft')",
             (admin_id, brief, full_text)
         )
         await db.commit()
@@ -286,52 +387,50 @@ async def _create_task(brief: str, admin_id: int) -> dict:
     finally:
         await db.close()
 
-    # Публикуем в топик «Задания»
-    published = False
-    topic_id = TOPIC_IDS.get("tasks")
-    if topic_id and GROUP_ID and _bot:
-        from datetime import datetime
-        now = datetime.now().strftime("%d.%m.%Y")
-        message_text = (
-            f"📋 <b>Задание #{task_id}</b> | {now}\n\n"
-            f"{full_text}\n\n"
-            f"📝 Баги → топик «Баги», краши → «Краши», скрины → «Отчёты»."
+    # Отправляем превью админу на подтверждение
+    bot = get_bot()
+    if bot:
+        safe_text = html_module.escape(full_text)
+        preview_text = (
+            f"📋 <b>Черновик задания #{task_id}</b>\n\n"
+            f"{safe_text}\n\n"
+            f"─────────────────\n"
+            f"✏️ Отправьте свой вариант текста, чтобы заменить."
         )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Опубликовать", callback_data=f"task_publish:{task_id}"),
+                InlineKeyboardButton(text="❌ Отменить", callback_data=f"task_cancel:{task_id}"),
+            ]
+        ])
         try:
-            msg = await _bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=topic_id,
-                text=message_text,
+            await bot.send_message(
+                chat_id=admin_id,
+                text=preview_text,
                 parse_mode="HTML",
+                reply_markup=keyboard,
             )
-            # Сохраняем message_id
-            db = await get_db()
-            try:
-                await db.execute("UPDATE tasks SET message_id = ? WHERE id = ?", (msg.message_id, task_id))
-                await db.commit()
-            finally:
-                await db.close()
-            published = True
         except Exception as e:
-            print(f"❌ Ошибка публикации задания: {e}")
+            print(f"❌ Ошибка отправки превью задания: {e}")
 
-    await log_info(f"Создано задание #{task_id}")
+    await log_info(f"Создан черновик задания #{task_id}")
 
     return {
         "success": True,
         "task_id": task_id,
         "brief": brief,
-        "full_text": full_text[:500],
-        "published": published,
+        "awaiting_confirmation": True,
     }
 
 
 async def _manage_admin(action: str, username: str = None) -> dict:
+    from agent.brain import clear_history
+
     if action == "list":
         admins = await get_all_admins()
         return {
             "admins": [
-                {"username": a["username"], "is_owner": a["is_owner"], "added_at": a["added_at"]}
+                {"username": _tag(a["username"]), "is_owner": a["is_owner"], "added_at": a["added_at"]}
                 for a in admins
             ]
         }
@@ -345,7 +444,9 @@ async def _manage_admin(action: str, username: str = None) -> dict:
         if not tester:
             return {"error": f"@{clean_username} не найден в базе. Человек должен сначала написать в группу."}
         ok = await add_admin(tester["telegram_id"], tester["username"], tester["full_name"])
-        return {"success": ok, "action": "added", "username": tester["username"]}
+        if ok:
+            clear_history(tester["telegram_id"])
+        return {"success": ok, "action": "added", "username": _tag(tester["username"])}
 
     elif action == "remove":
         if not tester:
@@ -353,7 +454,8 @@ async def _manage_admin(action: str, username: str = None) -> dict:
         ok = await remove_admin(tester["telegram_id"])
         if not ok:
             return {"error": "Не удалось удалить (возможно, это владелец)"}
-        return {"success": True, "action": "removed", "username": tester["username"]}
+        clear_history(tester["telegram_id"])
+        return {"success": True, "action": "removed", "username": _tag(tester["username"])}
 
     return {"error": f"Неизвестное действие: {action}"}
 
@@ -374,10 +476,16 @@ async def _search_bugs(query: str, tester: str = None) -> dict:
         sql += " ORDER BY b.id DESC LIMIT 20"
         cursor = await db.execute(sql, params)
         rows = await cursor.fetchall()
+        bugs = []
+        for r in rows:
+            bug = dict(r)
+            if bug.get("username"):
+                bug["username"] = _tag(bug["username"])
+            bugs.append(bug)
         return {
             "query": query,
-            "count": len(rows),
-            "bugs": [dict(r) for r in rows]
+            "count": len(bugs),
+            "bugs": bugs
         }
     finally:
         await db.close()

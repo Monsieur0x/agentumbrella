@@ -84,6 +84,21 @@ ALL_TOOLS = [
         }
     },
 
+    {
+        "name": "get_testers_list",
+        "description": "Получить полный список тестеров команды: юзернеймы, имена, баллы, предупреждения, статус (активен/деактивирован). Вызывай когда спрашивают список тестеров, кто в команде, кто с варнами, сколько тестеров.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_inactive": {
+                    "type": "boolean",
+                    "description": "Включить деактивированных тестеров (по умолчанию false)"
+                }
+            },
+            "required": []
+        }
+    },
+
     # --- БАЛЛЫ ---
     {
         "name": "award_points",
@@ -144,14 +159,32 @@ ALL_TOOLS = [
 
     # --- РЕЙТИНГ ---
     {
-        "name": "update_rating",
-        "description": "Сформировать и показать актуальный рейтинг тестеров.",
+        "name": "get_rating",
+        "description": "Получить рейтинг тестеров (баллы, баги, краши, игры). Возвращает данные БЕЗ публикации в группу. Используй когда спрашивают рейтинг, топ, список лучших.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "top_count": {
                     "type": "integer",
                     "description": "Сколько показать (0 = все)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "publish_rating",
+        "description": "Опубликовать рейтинг в топик «Топ» в группе. ТОЛЬКО когда ЯВНО просят опубликовать/обновить рейтинг в группе. НЕ вызывай просто для показа рейтинга. ТОЛЬКО ДЛЯ АДМИНОВ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "top_count": {
+                    "type": "integer",
+                    "description": "Сколько показать (0 = все)"
+                },
+                "comment": {
+                    "type": "string",
+                    "description": "Короткий комментарий к рейтингу (1-2 предложения). Напиши от себя: кто тащит, кто молчит, общий расклад. Без пафоса, как в чате."
                 }
             },
             "required": []
@@ -215,6 +248,6 @@ def get_tools_for_role(role: str) -> list:
         # Всё кроме manage_admin
         return [t for t in ALL_TOOLS if t["name"] != "manage_admin"]
 
-    # Тестер — только просмотр своей статистики
-    tester_tools = ["get_tester_stats", "update_rating"]
+    # Тестер — только просмотр своей статистики и рейтинга
+    tester_tools = ["get_tester_stats", "get_rating"]
     return [t for t in ALL_TOOLS if t["name"] in tester_tools]

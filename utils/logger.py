@@ -14,6 +14,11 @@ def set_bot(bot: Bot):
     _bot = bot
 
 
+def get_bot() -> Bot | None:
+    """Возвращает экземпляр бота (или None если не инициализирован)."""
+    return _bot
+
+
 async def log(level: str, text: str):
     """
     Отправляет лог в топик Logs.

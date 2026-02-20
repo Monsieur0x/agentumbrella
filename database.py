@@ -96,6 +96,30 @@ async def init_db():
             );
         """)
         await db.commit()
+
+        # Миграция: добавляем status в tasks если его нет
+        try:
+            await db.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'published'")
+            await db.commit()
+        except Exception:
+            pass  # Колонка уже существует
+
+        # Миграция: добавляем новые поля для багов если их нет
+        # SAFETY: col_name/col_type hardcoded below, never from user input
+        new_bug_columns = [
+            ("script_name", "TEXT"),
+            ("steps", "TEXT"),
+            ("youtube_link", "TEXT"),
+            ("file_id", "TEXT"),
+            ("file_type", "TEXT"),
+        ]
+        for col_name, col_type in new_bug_columns:
+            try:
+                await db.execute(f"ALTER TABLE bugs ADD COLUMN {col_name} {col_type}")
+                await db.commit()
+            except Exception:
+                pass  # Колонка уже существует
+
     print("✅ База данных инициализирована")
 
 

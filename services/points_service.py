@@ -33,7 +33,7 @@ async def award_points(username: str, amount: int, reason: str, admin_id: int = 
 
     return {
         "success": True,
-        "username": tester["username"],
+        "username": f"@{tester['username']}" if tester["username"] else tester["full_name"],
         "full_name": tester["full_name"],
         "amount": amount,
         "old_total": tester["total_points"],

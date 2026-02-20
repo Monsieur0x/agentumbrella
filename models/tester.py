@@ -8,25 +8,18 @@ async def get_or_create_tester(telegram_id: int, username: str = None, full_name
     """Получает тестера из базы или создаёт нового. Возвращает dict."""
     db = await get_db()
     try:
-        cursor = await db.execute(
-            "SELECT * FROM testers WHERE telegram_id = ?", (telegram_id,)
-        )
-        row = await cursor.fetchone()
-        if row:
-            # Обновляем username/full_name если изменились
-            if username or full_name:
-                await db.execute(
-                    "UPDATE testers SET username = COALESCE(?, username), full_name = COALESCE(?, full_name) WHERE telegram_id = ?",
-                    (username, full_name, telegram_id)
-                )
-                await db.commit()
-            return dict(row)
-
-        # Создаём нового
+        # INSERT OR IGNORE безопасен при конкурентных запросах —
+        # не упадёт с UNIQUE constraint если тестер уже есть
         await db.execute(
-            "INSERT INTO testers (telegram_id, username, full_name) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO testers (telegram_id, username, full_name) VALUES (?, ?, ?)",
             (telegram_id, username, full_name)
         )
+        # Обновляем username/full_name если переданы
+        if username or full_name:
+            await db.execute(
+                "UPDATE testers SET username = COALESCE(?, username), full_name = COALESCE(?, full_name) WHERE telegram_id = ?",
+                (username, full_name, telegram_id)
+            )
         await db.commit()
         cursor = await db.execute(
             "SELECT * FROM testers WHERE telegram_id = ?", (telegram_id,)

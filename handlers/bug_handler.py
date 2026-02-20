@@ -1,248 +1,219 @@
 """
-Обработка багрепортов в топиках «Баги» и «Краши».
-Этап 4: проверка формата → проверка дублей → Weeek → начисление баллов.
+Обработка багрепортов — новый формат:
+
+Тестер присылает сообщение (с прикреплённым файлом):
+    Скрипт: Название скрипта
+    Шаги: Описание шагов которые привели к проблеме
+    Видео: https://youtu.be/ссылка
+
+Бот сохраняет баг как pending и отправляет владельцу на подтверждение.
+Все pending-баги накапливаются в очереди — владелец подтверждает каждый независимо.
 """
 import re
 import html
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from models.tester import get_or_create_tester, update_tester_stats, update_tester_points
+from models.tester import get_or_create_tester
 from models.bug import create_bug
-from services.duplicate_checker import check_duplicate
-from services.weeek_service import create_task as weeek_create_task
-from config import POINTS, GROUP_ID, TOPIC_IDS
-from utils.logger import log_info, log_warn, log_error
+from config import POINTS, OWNER_TELEGRAM_ID
+from utils.logger import log_info
 
-# Паттерн для проверки формата багрепорта
-BUG_FORMAT_PATTERN = re.compile(
-    r"(?:📝\s*)?(?:Баг|Bug|Краш|Crash)\s*[:：]\s*(.+?)(?:\n|\r)",
-    re.IGNORECASE | re.DOTALL
+YOUTUBE_RE = re.compile(
+    r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=[\w-]+|youtu\.be/[\w-]+)',
+    re.IGNORECASE,
+)
+
+FORMAT_HELP = (
+    "👋 Оформи баг по шаблону:\n\n"
+    "<b>Скрипт:</b> Название скрипта\n"
+    "<b>Шаги:</b> Описание шагов которые привели к проблеме\n"
+    "<b>Видео:</b> https://youtu.be/ссылка\n\n"
+    "И прикрепи файл (видео, лог или скриншот) к сообщению 📎"
 )
 
 
 def parse_bug_report(text: str) -> dict | None:
     """
-    Парсит текст багрепорта. Возвращает dict с полями или None если формат неверный.
+    Парсит текст багрепорта.
+    Возвращает dict с script_name, steps, youtube_link или None если формат неверный.
     """
-    match = BUG_FORMAT_PATTERN.search(text)
-    if not match:
+    if not text:
         return None
 
-    title = match.group(1).strip()
+    # Убираем хештеги #баг / #краш чтобы не мешали парсингу
+    text = re.sub(r'#(?:баг|краш)\b', '', text, flags=re.IGNORECASE).strip()
 
-    # Пытаемся извлечь секции
-    description = ""
-    expected = ""
-    actual = ""
+    result = {"script_name": "", "steps": "", "youtube_link": ""}
+    current = None
 
-    lines = text.split("\n")
-    current_section = None
-    sections = {"описание": "", "ожидаемый": "", "фактический": ""}
+    for line in text.splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
 
-    for line in lines:
-        lower = line.lower().strip()
-        if "описание" in lower:
-            current_section = "описание"
-            # Берём текст после "Описание:"
-            parts = line.split(":", 1)
-            if len(parts) > 1 and parts[1].strip():
-                sections["описание"] = parts[1].strip()
-            continue
-        elif "ожидаемый" in lower:
-            current_section = "ожидаемый"
-            parts = line.split(":", 1)
-            if len(parts) > 1 and parts[1].strip():
-                sections["ожидаемый"] = parts[1].strip()
-            continue
-        elif "фактический" in lower:
-            current_section = "фактический"
-            parts = line.split(":", 1)
-            if len(parts) > 1 and parts[1].strip():
-                sections["фактический"] = parts[1].strip()
-            continue
+        if lower.startswith("скрипт:") or lower.startswith("script:"):
+            result["script_name"] = stripped.split(":", 1)[1].strip()
+            current = "script_name"
+        elif lower.startswith("шаги:") or lower.startswith("steps:"):
+            result["steps"] = stripped.split(":", 1)[1].strip()
+            current = "steps"
+        elif lower.startswith("видео:") or lower.startswith("video:"):
+            result["youtube_link"] = stripped.split(":", 1)[1].strip()
+            current = "youtube_link"
+        elif current and stripped:
+            # Продолжение многострочного поля
+            if current == "steps":
+                result["steps"] += "\n" + stripped
+            elif current == "youtube_link":
+                result["youtube_link"] += stripped
 
-        if current_section and line.strip():
-            sections[current_section] += " " + line.strip()
+    # Извлекаем/валидируем YouTube URL
+    match = YOUTUBE_RE.search(result["youtube_link"])
+    if match:
+        result["youtube_link"] = match.group(0)
+    else:
+        # Ищем ссылку где угодно в тексте
+        match = YOUTUBE_RE.search(text)
+        if match:
+            result["youtube_link"] = match.group(0)
 
-    return {
-        "title": title,
-        "description": sections["описание"].strip() or text,
-        "expected": sections["ожидаемый"].strip(),
-        "actual": sections["фактический"].strip(),
-    }
+    if not result["script_name"] or not result["steps"] or not result["youtube_link"]:
+        return None
+
+    return result
 
 
-async def handle_bug_report(message: Message, topic: str, role: str):
+async def handle_bug_report(message: Message, topic: str, role: str = "tester"):
     """Обрабатывает сообщение в топике багов/крашей."""
-    if not message.text:
-        return
-
     user = message.from_user
-    text = message.text.strip()
     bug_type = "crash" if topic == "crashes" else "bug"
+
+    # Текст — в caption (если есть файл) или в text
+    text = message.caption or message.text or ""
+
+    # Определяем прикреплённый файл
+    file_id = None
+    file_type = None
+    if message.document:
+        file_id = message.document.file_id
+        file_type = "document"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        file_type = "photo"
+    elif message.video:
+        file_id = message.video.file_id
+        file_type = "video"
 
     # 1. Парсим формат
     parsed = parse_bug_report(text)
-
     if not parsed:
+        await message.reply(FORMAT_HELP, parse_mode="HTML")
+        return
+
+    # 2. Проверяем файл
+    if not file_id:
         await message.reply(
-            "👋 Привет! Багрепорт не совсем по формату. Нужно:\n\n"
-            "<b>📝 Баг: [заголовок]</b>\n\n"
-            "Описание: [что произошло]\n\n"
-            "Ожидаемый результат: [как должно быть]\n\n"
-            "Фактический результат: [как на самом деле]\n\n"
-            "Попробуй переписать 🙏",
-            parse_mode="HTML"
+            "📎 Не забудь прикрепить файл (видео, лог или скриншот) к сообщению!",
         )
         return
 
-    tester = await get_or_create_tester(user.id, user.username, user.full_name)
+    await get_or_create_tester(user.id, user.username, user.full_name)
     points = POINTS["crash_accepted"] if bug_type == "crash" else POINTS["bug_accepted"]
 
-    # 2. Проверяем дубли
+    # 2.5. Проверяем на дубли
     try:
-        dup_check = await check_duplicate(parsed["title"], parsed["description"])
+        from services.duplicate_checker import check_duplicate
+        dup_result = await check_duplicate(parsed["script_name"], parsed["steps"])
+        if dup_result.get("is_duplicate"):
+            similar_id = dup_result.get("similar_bug_id", "?")
+            explanation = dup_result.get("explanation", "")
+            await message.reply(
+                f"⚠️ Возможный дубль бага <b>#{similar_id}</b>\n"
+                f"{explanation}\n\n"
+                f"Если это другой баг — отправь повторно с уточнением.",
+                parse_mode="HTML",
+            )
+            return
     except Exception as e:
         print(f"⚠️ Ошибка проверки дублей: {e}")
-        dup_check = {"is_duplicate": False, "similar_bug_id": None, "explanation": ""}
 
-    if dup_check.get("is_duplicate") and dup_check.get("similar_bug_id"):
-        # Возможный дубль — сохраняем как pending и отправляем в Logs
-        bug_id = await create_bug(
-            tester_id=user.id,
-            message_id=message.message_id,
-            title=parsed["title"],
-            description=parsed["description"],
-            expected=parsed["expected"],
-            actual=parsed["actual"],
-            bug_type=bug_type,
-            points=0,
-            status="pending",
-        )
-
-        similar_id = dup_check["similar_bug_id"]
-        explanation = dup_check.get("explanation", "")
-
-        # Кнопки для админа
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Это дубль", callback_data=f"dup_yes:{bug_id}"),
-                InlineKeyboardButton(text="❌ Не дубль — принять", callback_data=f"dup_no:{bug_id}:{points}"),
-            ]
-        ])
-
-        # Отправляем в Logs
-        log_topic = TOPIC_IDS.get("logs")
-        if log_topic and GROUP_ID:
-            from utils.logger import _bot
-            if _bot:
-                try:
-                    await _bot.send_message(
-                        chat_id=GROUP_ID,
-                        message_thread_id=log_topic,
-                        text=(
-                            f"⚠️ <b>Возможный дубль</b>\n\n"
-                            f"Новый {'краш' if bug_type == 'crash' else 'баг'}: <b>«{html.escape(parsed['title'])}»</b>\n"
-                            f"От: @{html.escape(user.username or '')}\n\n"
-                            f"Похож на: <b>#{similar_id}</b>\n"
-                            f"Причина: {html.escape(explanation)}\n"
-                        ),
-                        parse_mode="HTML",
-                        reply_markup=keyboard,
-                    )
-                except Exception as e:
-                    print(f"❌ Ошибка отправки в Logs: {e}")
-
-        await message.reply(
-            f"🔍 Баг #{bug_id} на проверке — возможно, это дубль бага #{similar_id}.\n"
-            f"Админ решит принять или отклонить."
-        )
-        await log_warn(f"Возможный дубль: #{bug_id} ≈ #{similar_id} от @{user.username}")
-        return
-
-    # 3. Не дубль — сохраняем и начисляем баллы
+    # 3. Сохраняем как pending
     bug_id = await create_bug(
         tester_id=user.id,
         message_id=message.message_id,
-        title=parsed["title"],
-        description=parsed["description"],
-        expected=parsed["expected"],
-        actual=parsed["actual"],
+        script_name=parsed["script_name"],
+        steps=parsed["steps"],
+        youtube_link=parsed["youtube_link"],
+        file_id=file_id,
+        file_type=file_type,
         bug_type=bug_type,
+        points=points,
+        status="pending",
+    )
+
+    # 4. Уведомляем владельца
+    await _notify_owner(
+        bug_id=bug_id,
+        bug_type=bug_type,
+        script_name=parsed["script_name"],
+        steps=parsed["steps"],
+        youtube_link=parsed["youtube_link"],
+        file_id=file_id,
+        file_type=file_type,
+        username=user.username or user.full_name or str(user.id),
         points=points,
     )
 
-    await update_tester_points(user.id, points)
-    if bug_type == "crash":
-        await update_tester_stats(user.id, crashes=1)
-    else:
-        await update_tester_stats(user.id, bugs=1)
-
-    # 4. Спрашиваем владельца — в какую доску отправить
-    await _ask_owner_board(bug_id, parsed["title"], bug_type, user.username or "")
-
-    # 5. Отвечаем
-    emoji = "💥" if bug_type == "crash" else "✅"
+    # 5. Отвечаем тестеру
+    emoji = "💥" if bug_type == "crash" else "🐛"
     await message.reply(
-        f"{emoji} {'Краш' if bug_type == 'crash' else 'Баг'} <b>#{bug_id}</b> принят! +{points} б.",
-        parse_mode="HTML"
+        f"{emoji} {'Краш' if bug_type == 'crash' else 'Баг'} <b>#{bug_id}</b> отправлен владельцу на подтверждение ⏳",
+        parse_mode="HTML",
     )
 
     await log_info(
-        f"{'Краш' if bug_type == 'crash' else 'Баг'} #{bug_id} принят от @{user.username}, +{points} б."
+        f"{'Краш' if bug_type == 'crash' else 'Баг'} #{bug_id} от @{user.username} ожидает подтверждения"
     )
 
 
-async def _ask_owner_board(bug_id: int, title: str, bug_type: str, username: str):
-    """Отправляет владельцу в ЛС кнопки выбора доски для бага."""
-    from services.weeek_service import get_cached_boards
-    from config import OWNER_TELEGRAM_ID
-    from utils.logger import _bot
+async def _notify_owner(bug_id: int, bug_type: str, script_name: str,
+                        steps: str, youtube_link: str, file_id: str,
+                        file_type: str, username: str, points: int):
+    """Отправляет владельцу DM с деталями бага и кнопками Подтвердить/Отклонить."""
+    from utils.logger import get_bot
 
-    if not _bot:
+    bot = get_bot()
+    if not bot:
         return
-
-    boards = get_cached_boards()
-    if not boards:
-        # Нет досок — создаём без доски
-        from services.weeek_service import create_task as weeek_create_task
-        await weeek_create_task(title=title, description="", bug_type=bug_type,
-                                tester_username=username, bug_id=bug_id)
-        return
-
-    # Кнопки с досками (по 2 в ряд)
-    rows = []
-    row = []
-    for board in boards:
-        board_name = board.get("name", "?")
-        board_id = board.get("id", 0)
-        col_id = board.get("_first_column_id", 0)
-        row.append(InlineKeyboardButton(
-            text=f"📋 {board_name}",
-            callback_data=f"weeek:{bug_id}:{board_id}:{col_id}"
-        ))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-
-    # Кнопка "Не отправлять"
-    rows.append([InlineKeyboardButton(text="❌ Не отправлять в Weeek", callback_data=f"weeek_skip:{bug_id}")])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
 
     emoji = "💥" if bug_type == "crash" else "🐛"
+    text = (
+        f"{emoji} <b>{'Краш' if bug_type == 'crash' else 'Баг'} #{bug_id}</b>\n"
+        f"От: @{html.escape(username)}\n\n"
+        f"📄 <b>Скрипт:</b> {html.escape(script_name)}\n\n"
+        f"🔢 <b>Шаги:</b>\n{html.escape(steps)}\n\n"
+        f"🎥 <b>Видео:</b> {html.escape(youtube_link)}\n\n"
+        f"💰 Баллов при подтверждении: <b>{points}</b>"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"bug_confirm:{bug_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"bug_reject:{bug_id}"),
+        ]
+    ])
+
     try:
-        await _bot.send_message(
+        await bot.send_message(
             chat_id=OWNER_TELEGRAM_ID,
-            text=(
-                f"{emoji} <b>Новый {'краш' if bug_type == 'crash' else 'баг'} #{bug_id}</b>\n"
-                f"<b>«{html.escape(title)}»</b>\n"
-                f"От: @{html.escape(username)}\n\n"
-                f"📋 В какую доску Weeek отправить?"
-            ),
+            text=text,
             parse_mode="HTML",
             reply_markup=keyboard,
         )
+        # Файл отдельным сообщением
+        if file_type == "document":
+            await bot.send_document(chat_id=OWNER_TELEGRAM_ID, document=file_id)
+        elif file_type == "photo":
+            await bot.send_photo(chat_id=OWNER_TELEGRAM_ID, photo=file_id)
+        elif file_type == "video":
+            await bot.send_video(chat_id=OWNER_TELEGRAM_ID, video=file_id)
     except Exception as e:
-        print(f"❌ Не удалось отправить выбор доски владельцу: {e}")
+        print(f"❌ Не удалось уведомить владельца о баге #{bug_id}: {e}")

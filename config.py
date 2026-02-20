@@ -1,5 +1,5 @@
 """
-Конфигурация бота QA Manager.
+Конфигурация бота Umbrella Bot.
 Все секреты берутся из .env файла.
 """
 import os
@@ -14,7 +14,7 @@ OWNER_TELEGRAM_ID = int(os.getenv("OWNER_TELEGRAM_ID", "0"))
 # === Anthropic ===
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 if ANTHROPIC_API_KEY:
-    print(f"🔑 Anthropic ключ: {ANTHROPIC_API_KEY[:8]}...{ANTHROPIC_API_KEY[-4:]}")
+    print("✅ ANTHROPIC_API_KEY задан")
 else:
     print("⚠️ ANTHROPIC_API_KEY не задан!")
 
@@ -47,9 +47,9 @@ POINTS = {
 }
 
 # === Модели Anthropic ===
-MODEL_AGENT = "claude-sonnet-4-5-20250929"    # Мозг агента (function calling)
-MODEL_CHEAP = "claude-haiku-4-5-20251001"     # Дешёвые задачи (формат багов, дубли)
-MODEL_VISION = "claude-haiku-4-5-20251001"    # Анализ скриншотов
+MODEL_AGENT = os.getenv("MODEL_AGENT", "claude-sonnet-4-5-20250929")
+MODEL_CHEAP = os.getenv("MODEL_CHEAP", "claude-haiku-4-5-20251001")
+MODEL_VISION = os.getenv("MODEL_VISION", "claude-haiku-4-5-20251001")
 
 # === Режим отладки ===
 DEBUG_TOPICS = os.getenv("DEBUG_TOPICS", "0") == "1"

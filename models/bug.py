@@ -4,16 +4,30 @@ CRUD-операции с багами.
 from database import get_db
 
 
-async def create_bug(tester_id: int, message_id: int, title: str, description: str,
-                     expected: str, actual: str, bug_type: str = "bug",
-                     points: int = 0, status: str = "accepted") -> int:
+async def create_bug(tester_id: int, message_id: int,
+                     script_name: str = "", steps: str = "",
+                     youtube_link: str = "", file_id: str = "",
+                     file_type: str = "",
+                     # Обратная совместимость со старыми полями
+                     title: str = "", description: str = "",
+                     expected: str = "", actual: str = "",
+                     bug_type: str = "bug",
+                     points: int = 0, status: str = "pending") -> int:
     """Создаёт баг, возвращает ID."""
+    # Маппинг: script_name → title, steps → description для совместимости
+    effective_title = script_name or title
+    effective_desc = steps or description
     db = await get_db()
     try:
         cursor = await db.execute(
-            """INSERT INTO bugs (tester_id, message_id, title, description, expected, actual, type, points_awarded, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (tester_id, message_id, title, description, expected, actual, bug_type, points, status)
+            """INSERT INTO bugs
+               (tester_id, message_id, title, description, expected, actual,
+                type, points_awarded, status,
+                script_name, steps, youtube_link, file_id, file_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (tester_id, message_id, effective_title, effective_desc,
+             expected, actual, bug_type, points, status,
+             script_name, steps, youtube_link, file_id, file_type)
         )
         await db.commit()
         return cursor.lastrowid
