@@ -462,9 +462,111 @@ async def handle_task_cancel(callback: CallbackQuery):
 #  Старый флоу (backward compat)
 # ─────────────────────────────────────────────
 
+@router.callback_query(F.data.startswith("dup_confirm:"))
+async def handle_dup_confirm(callback: CallbackQuery):
+    """Владелец подтвердил: это дубль — помечаем и уведомляем тестера."""
+    if not await is_owner(callback.from_user.id):
+        await callback.answer("Только владелец может решать", show_alert=True)
+        return
+
+    bug_id = int(callback.data.split(":")[1])
+    bug = await get_bug(bug_id)
+    if not bug:
+        await callback.answer("Баг не найден", show_alert=True)
+        return
+
+    if bug["status"] != "pending":
+        await callback.answer("Баг уже обработан", show_alert=True)
+        return
+
+    await mark_duplicate(bug_id)
+
+    # Уведомляем тестера
+    bot = get_bot()
+    if bot:
+        try:
+            await bot.send_message(
+                chat_id=bug["tester_id"],
+                text=(
+                    f"🔄 Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
+                    f"<b>#{bug_id}</b> был отклонён как дубль."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    await callback.message.edit_text(
+        (callback.message.text or "") + f"\n\n🔄 <b>Дубль</b> (решил @{callback.from_user.username})",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await callback.answer("Баг помечен как дубль")
+    await log_info(f"Баг #{bug_id} помечен как дубль (@{callback.from_user.username})")
+
+
+@router.callback_query(F.data.startswith("dup_notdup:"))
+async def handle_dup_notdup(callback: CallbackQuery):
+    """Владелец решил: не дубль — принимаем баг, начисляем баллы, показываем доски."""
+    if not await is_owner(callback.from_user.id):
+        await callback.answer("Только владелец может решать", show_alert=True)
+        return
+
+    bug_id = int(callback.data.split(":")[1])
+    bug = await get_bug(bug_id)
+    if not bug:
+        await callback.answer("Баг не найден", show_alert=True)
+        return
+
+    if bug["status"] != "pending":
+        await callback.answer("Баг уже обработан", show_alert=True)
+        return
+
+    points = bug["points_awarded"]
+
+    # Принимаем баг и начисляем баллы
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE bugs SET status = 'accepted' WHERE id = ?", (bug_id,)
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+    await update_tester_points(bug["tester_id"], points)
+    if bug["type"] == "crash":
+        await update_tester_stats(bug["tester_id"], crashes=1)
+    else:
+        await update_tester_stats(bug["tester_id"], bugs=1)
+
+    # Уведомляем тестера
+    bot = get_bot()
+    if bot:
+        try:
+            emoji = "💥" if bug["type"] == "crash" else "✅"
+            await bot.send_message(
+                chat_id=bug["tester_id"],
+                text=(
+                    f"{emoji} Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
+                    f"<b>#{bug_id}</b> принят! +{points} б. 🎉"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    # Показываем выбор доски Weeek
+    await _show_board_selection(callback, bug_id)
+    await callback.answer(f"Не дубль — баг #{bug_id} принят, +{points} б.")
+    await log_info(
+        f"Баг #{bug_id} — не дубль, принят владельцем @{callback.from_user.username}, +{points} б."
+    )
+
+
 @router.callback_query(F.data.startswith("dup_yes:"))
 async def handle_dup_yes(callback: CallbackQuery):
-    """Админ подтвердил: это дубль."""
+    """Админ подтвердил: это дубль (старый флоу)."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может решать", show_alert=True)
         return

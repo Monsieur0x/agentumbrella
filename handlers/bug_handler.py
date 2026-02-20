@@ -119,19 +119,10 @@ async def handle_bug_report(message: Message, topic: str, role: str = "tester"):
     points = POINTS["crash_accepted"] if bug_type == "crash" else POINTS["bug_accepted"]
 
     # 2.5. Проверяем на дубли
+    dup_result = None
     try:
         from services.duplicate_checker import check_duplicate
         dup_result = await check_duplicate(parsed["script_name"], parsed["steps"])
-        if dup_result.get("is_duplicate"):
-            similar_id = dup_result.get("similar_bug_id", "?")
-            explanation = dup_result.get("explanation", "")
-            await message.reply(
-                f"⚠️ Возможный дубль бага <b>#{similar_id}</b>\n"
-                f"{explanation}\n\n"
-                f"Если это другой баг — отправь повторно с уточнением.",
-                parse_mode="HTML",
-            )
-            return
     except Exception as e:
         print(f"⚠️ Ошибка проверки дублей: {e}")
 
@@ -150,17 +141,34 @@ async def handle_bug_report(message: Message, topic: str, role: str = "tester"):
     )
 
     # 4. Уведомляем владельца
-    await _notify_owner(
-        bug_id=bug_id,
-        bug_type=bug_type,
-        script_name=parsed["script_name"],
-        steps=parsed["steps"],
-        youtube_link=parsed["youtube_link"],
-        file_id=file_id,
-        file_type=file_type,
-        username=user.username or user.full_name or str(user.id),
-        points=points,
-    )
+    if dup_result and dup_result.get("is_duplicate"):
+        # Возможный дубль — отправляем владельцу на проверку дубля
+        await _notify_owner_duplicate(
+            bug_id=bug_id,
+            bug_type=bug_type,
+            script_name=parsed["script_name"],
+            steps=parsed["steps"],
+            youtube_link=parsed["youtube_link"],
+            file_id=file_id,
+            file_type=file_type,
+            username=user.username or user.full_name or str(user.id),
+            points=points,
+            similar_bug_id=dup_result.get("similar_bug_id"),
+            explanation=dup_result.get("explanation", ""),
+        )
+    else:
+        # Обычный баг — стандартный флоу
+        await _notify_owner(
+            bug_id=bug_id,
+            bug_type=bug_type,
+            script_name=parsed["script_name"],
+            steps=parsed["steps"],
+            youtube_link=parsed["youtube_link"],
+            file_id=file_id,
+            file_type=file_type,
+            username=user.username or user.full_name or str(user.id),
+            points=points,
+        )
 
     # 5. Отвечаем тестеру
     emoji = "💥" if bug_type == "crash" else "🐛"
@@ -217,3 +225,67 @@ async def _notify_owner(bug_id: int, bug_type: str, script_name: str,
             await bot.send_video(chat_id=OWNER_TELEGRAM_ID, video=file_id)
     except Exception as e:
         print(f"❌ Не удалось уведомить владельца о баге #{bug_id}: {e}")
+
+
+async def _notify_owner_duplicate(bug_id: int, bug_type: str, script_name: str,
+                                  steps: str, youtube_link: str, file_id: str,
+                                  file_type: str, username: str, points: int,
+                                  similar_bug_id: int | None, explanation: str):
+    """Отправляет владельцу DM с деталями бага и пометкой о возможном дубле."""
+    from utils.logger import get_bot
+
+    bot = get_bot()
+    if not bot:
+        return
+
+    emoji = "💥" if bug_type == "crash" else "🐛"
+    similar_text = f"#{similar_bug_id}" if similar_bug_id else "?"
+    text = (
+        f"⚠️ <b>ВОЗМОЖНЫЙ ДУБЛЬ</b>\n\n"
+        f"{emoji} <b>{'Краш' if bug_type == 'crash' else 'Баг'} #{bug_id}</b>\n"
+        f"От: @{html.escape(username)}\n\n"
+        f"📄 <b>Скрипт:</b> {html.escape(script_name)}\n\n"
+        f"🔢 <b>Шаги:</b>\n{html.escape(steps)}\n\n"
+        f"🎥 <b>Видео:</b> {html.escape(youtube_link)}\n\n"
+        f"🔄 <b>Похож на:</b> баг <b>{similar_text}</b>\n"
+        f"💬 <i>{html.escape(explanation)}</i>\n\n"
+        f"💰 Баллов при подтверждении: <b>{points}</b>"
+    )
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🔄 Да, это дубль",
+                callback_data=f"dup_confirm:{bug_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="✅ Не дубль — принять",
+                callback_data=f"dup_notdup:{bug_id}",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Отклонить",
+                callback_data=f"bug_reject:{bug_id}",
+            ),
+        ],
+    ])
+
+    try:
+        await bot.send_message(
+            chat_id=OWNER_TELEGRAM_ID,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        # Файл отдельным сообщением
+        if file_type == "document":
+            await bot.send_document(chat_id=OWNER_TELEGRAM_ID, document=file_id)
+        elif file_type == "photo":
+            await bot.send_photo(chat_id=OWNER_TELEGRAM_ID, photo=file_id)
+        elif file_type == "video":
+            await bot.send_video(chat_id=OWNER_TELEGRAM_ID, video=file_id)
+    except Exception as e:
+        print(f"❌ Не удалось уведомить владельца о возможном дубле #{bug_id}: {e}")
