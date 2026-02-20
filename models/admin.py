@@ -10,26 +10,21 @@ async def init_owner():
     if not OWNER_TELEGRAM_ID:
         return
     db = await get_db()
-    try:
-        await db.execute(
-            """INSERT OR IGNORE INTO admins (telegram_id, is_owner)
-               VALUES (?, 1)""",
-            (OWNER_TELEGRAM_ID,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute(
+        """INSERT OR IGNORE INTO admins (telegram_id, is_owner)
+           VALUES (?, 1)""",
+        (OWNER_TELEGRAM_ID,)
+    )
+    await db.commit()
 
 
 async def is_admin(telegram_id: int) -> bool:
+    """Проверяет наличие в таблице admins. Возвращает True и для владельца (он тоже в admins)."""
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)
-        )
-        return await cursor.fetchone() is not None
-    finally:
-        await db.close()
+    cursor = await db.execute(
+        "SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)
+    )
+    return await cursor.fetchone() is not None
 
 
 async def is_owner(telegram_id: int) -> bool:
@@ -48,29 +43,21 @@ async def add_admin(telegram_id: int, username: str = None, full_name: str = Non
         return True
     except Exception:
         return False
-    finally:
-        await db.close()
 
 
 async def remove_admin(telegram_id: int) -> bool:
     if telegram_id == OWNER_TELEGRAM_ID:
         return False  # Нельзя удалить владельца
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "DELETE FROM admins WHERE telegram_id = ? AND is_owner = 0", (telegram_id,)
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-    finally:
-        await db.close()
+    cursor = await db.execute(
+        "DELETE FROM admins WHERE telegram_id = ? AND is_owner = 0", (telegram_id,)
+    )
+    await db.commit()
+    return cursor.rowcount > 0
 
 
 async def get_all_admins() -> list[dict]:
     db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM admins ORDER BY is_owner DESC, added_at")
-        rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        await db.close()
+    cursor = await db.execute("SELECT * FROM admins ORDER BY is_owner DESC, added_at")
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]

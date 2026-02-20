@@ -14,22 +14,15 @@ async def award_points(username: str, amount: int, reason: str, admin_id: int = 
     if not tester:
         return {"success": False, "error": f"Тестер @{username.lstrip('@')} не найден в базе"}
 
-    await update_tester_points(tester["telegram_id"], amount)
+    new_total = await update_tester_points(tester["telegram_id"], amount)
 
     # Записываем в лог баллов
     db = await get_db()
-    try:
-        await db.execute(
-            "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
-            (tester["telegram_id"], amount, reason, source, admin_id)
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-    new_total = tester["total_points"] + amount
-    if new_total < 0:
-        new_total = 0
+    await db.execute(
+        "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
+        (tester["telegram_id"], amount, reason, source, admin_id)
+    )
+    await db.commit()
 
     return {
         "success": True,
@@ -48,8 +41,11 @@ async def award_points_bulk(usernames: list | str, amount: int, reason: str, adm
     usernames: список юзернеймов или "all" для всех.
     """
     if usernames == "all" or usernames == ["all"]:
+        from models.admin import get_all_admins
         testers = await get_all_testers()
-        targets = [t["username"] for t in testers if t["username"]]
+        admins = await get_all_admins()
+        admin_ids = {a["telegram_id"] for a in admins}
+        targets = [t["username"] for t in testers if t["username"] and t["telegram_id"] not in admin_ids]
     else:
         if isinstance(usernames, str):
             targets = [u.strip().lstrip("@") for u in usernames.split(",")]

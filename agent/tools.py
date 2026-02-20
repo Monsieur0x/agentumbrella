@@ -133,14 +133,47 @@ ALL_TOOLS = [
     # --- ПРЕДУПРЕЖДЕНИЯ ---
     {
         "name": "issue_warning",
-        "description": "Выдать предупреждение тестеру. ТОЛЬКО ДЛЯ АДМИНОВ.",
+        "description": "Выдать предупреждение тестеру. ТОЛЬКО ДЛЯ АДМИНОВ. Если админ не указал причину — подставь 'Без причины', НЕ спрашивай.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "username": {"type": "string", "description": "Юзернейм тестера"},
-                "reason": {"type": "string", "description": "Причина предупреждения"}
+                "reason": {"type": "string", "description": "Причина предупреждения (необязательно, по умолчанию 'Без причины')"}
             },
-            "required": ["username", "reason"]
+            "required": ["username"]
+        }
+    },
+    {
+        "name": "issue_warning_bulk",
+        "description": "Выдать предупреждение нескольким тестерам или всем сразу. ТОЛЬКО ДЛЯ АДМИНОВ. Если админ не указал причину — подставь 'Без причины', НЕ спрашивай.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "usernames": {
+                    "type": "string",
+                    "description": "Юзернеймы через запятую или 'all' для всех тестеров"
+                },
+                "reason": {"type": "string", "description": "Причина предупреждения (необязательно, по умолчанию 'Без причины')"}
+            },
+            "required": ["usernames"]
+        }
+    },
+    {
+        "name": "remove_warning",
+        "description": "Снять предупреждение (варн) у тестера, нескольких тестеров или у всех сразу. ТОЛЬКО ДЛЯ АДМИНОВ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "usernames": {
+                    "type": "string",
+                    "description": "Юзернеймы через запятую или 'all' для всех тестеров"
+                },
+                "amount": {
+                    "type": "integer",
+                    "description": "Сколько варнов снять (0 = сбросить все варны у тестера). По умолчанию 1"
+                }
+            },
+            "required": ["usernames"]
         }
     },
 
@@ -212,6 +245,17 @@ ALL_TOOLS = [
         }
     },
 
+    # --- ОБНОВЛЕНИЕ СПИСКА ТЕСТЕРОВ ---
+    {
+        "name": "refresh_testers",
+        "description": "Обновить список тестеров: проверяет кто ещё в группе, а кто вышел/кикнут. Деактивирует тех, кто больше не в группе. Вызывай когда просят обновить/синхронизировать список тестеров. ТОЛЬКО ДЛЯ АДМИНОВ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+
     # --- БАГИ ---
     {
         "name": "mark_bug_duplicate",
@@ -239,15 +283,60 @@ ALL_TOOLS = [
 ]
 
 
+TOOL_KEYWORDS: dict[str, list[str]] = {
+    "get_tester_stats":    [r"статист", r"стат\b", r"показат", r"@\w"],
+    "get_team_stats":      [r"команд", r"общ\w+ стат", r"за\s+(сегодня|недел|месяц|всё)"],
+    "get_inactive_testers":[r"неактивн", r"не работал", r"молчат", r"пропал"],
+    "compare_testers":     [r"сравни"],
+    "get_bug_stats":       [r"баг", r"краш", r"стат\w*\s+баг", r"стат\w*\s+краш"],
+    "get_testers_list":    [r"список\s+тестер", r"кто в команд", r"тестер\w*", r"варн", r"сколько\s+тестер"],
+    "award_points":        [r"начисл", r"списа", r"балл", r"@\w"],
+    "award_points_bulk":   [r"начисл\w*\s+.*всем", r"всем\s+.*балл", r"массов"],
+    "issue_warning":       [r"предупред", r"варн", r"@\w"],
+    "issue_warning_bulk":  [r"варн\w*\s+.*всем", r"всем\s+.*варн", r"предупред\w*\s+.*всем", r"всем\s+.*предупред", r"массов\w*\s+варн"],
+    "remove_warning":      [r"сн[яи]\w*\s+.*варн", r"сн[яи]\w*\s+.*предупр", r"убра\w*\s+.*варн", r"убра\w*\s+.*предупр", r"сброс\w*\s+.*(варн|предупр)", r"снять\s+.*варн", r"обнул\w*\s+.*варн"],
+    "create_task":         [r"задани", r"создай\s+задан", r"дай\s+задани", r"таск"],
+    "get_rating":          [r"рейтинг", r"топ\b", r"лидер", r"таблиц"],
+    "publish_rating":      [r"опубликуй\s+(рейтинг|топ)", r"публик\w*\s+(рейтинг|топ)", r"обнови\s+(рейтинг|топ)", r"опубликуй\s+в\s+топик"],
+    "refresh_testers":     [r"обнови\s+(список|тестер)", r"синхрон", r"актуализ", r"обновить\s+(список|тестер)"],
+    "manage_admin":        [r"админ", r"добав\w+\s+админ", r"удал\w+\s+админ"],
+    "mark_bug_duplicate":  [r"дубл", r"дубликат", r"помет\w+\s+дубл"],
+    "search_bugs":         [r"найди\s+баг", r"поиск\s+баг", r"искать\s+баг", r"баг\w*\s+по", r"найди\s+краш"],
+}
+
+_TOOL_BY_NAME = {t["name"]: t for t in ALL_TOOLS}
+
+# Роли → запрещённые tools
+_ROLE_EXCLUDE: dict[str, set[str]] = {
+    "owner":  set(),
+    "admin":  {"manage_admin"},
+    "tester": set(TOOL_KEYWORDS.keys()) - {"get_tester_stats", "get_rating"},
+}
+
+
 def get_tools_for_role(role: str) -> list:
     """Возвращает набор инструментов в зависимости от роли."""
     if role == "owner":
-        return ALL_TOOLS  # Все инструменты
-
+        return ALL_TOOLS
     if role == "admin":
-        # Всё кроме manage_admin
         return [t for t in ALL_TOOLS if t["name"] != "manage_admin"]
-
-    # Тестер — только просмотр своей статистики и рейтинга
     tester_tools = ["get_tester_stats", "get_rating"]
     return [t for t in ALL_TOOLS if t["name"] in tester_tools]
+
+
+def match_tools(text: str, role: str) -> list:
+    """Возвращает только tools, чьи ключевые слова совпали с текстом."""
+    import re
+    exclude = _ROLE_EXCLUDE.get(role, set())
+    matched = set()
+    text_lower = text.lower()
+    for tool_name, keywords in TOOL_KEYWORDS.items():
+        if tool_name in exclude:
+            continue
+        for kw in keywords:
+            if re.search(kw, text_lower):
+                matched.add(tool_name)
+                break
+    if not matched:
+        return []
+    return [_TOOL_BY_NAME[name] for name in matched if name in _TOOL_BY_NAME]

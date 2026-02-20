@@ -3,7 +3,8 @@
 """
 import json
 from models.tester import (
-    get_tester_by_username, get_all_testers, increment_warnings
+    get_tester_by_username, get_all_testers, increment_warnings,
+    decrement_warnings, reset_warnings, reset_all_warnings
 )
 from models.bug import get_bug, mark_duplicate, get_bug_stats, get_recent_bugs
 from models.admin import add_admin, remove_admin, get_all_admins
@@ -11,6 +12,7 @@ from services.points_service import award_points, award_points_bulk
 from services.rating_service import get_rating
 from database import get_db
 from utils.logger import log_info, log_admin, get_bot
+from config import SEARCH_BUGS_LIMIT
 
 
 def _normalize_username(username: str) -> str:
@@ -26,7 +28,7 @@ def _tag(username: str) -> str:
     return f"@{clean}"
 
 
-async def execute_tool(name: str, arguments: str, caller_id: int = None) -> str:
+async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: str = "") -> str:
     """
     Выполняет функцию по имени и возвращает JSON-результат.
     arguments — строка JSON от ИИ.
@@ -37,13 +39,13 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None) -> str:
         return json.dumps({"error": "Не удалось разобрать аргументы"}, ensure_ascii=False)
 
     try:
-        result = await _dispatch(name, args, caller_id)
+        result = await _dispatch(name, args, caller_id, topic)
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as e:
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 
-_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "create_task", "mark_bug_duplicate", "search_bugs", "publish_rating"}
+_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "publish_rating", "refresh_testers"}
 _OWNER_TOOLS = {"manage_admin"}
 
 
@@ -61,7 +63,7 @@ async def _check_permission(name: str, caller_id: int) -> str | None:
     return None
 
 
-async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
+async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "") -> dict:
     """Маршрутизация вызовов функций."""
 
     # === Проверка прав ===
@@ -102,12 +104,19 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
     elif name == "award_points_bulk":
         usernames = args.get("usernames", "all")
         result = await award_points_bulk(usernames, args["amount"], args["reason"], caller_id)
-        await log_admin(f"Массовое начисление: {args['amount']} б. ({args['reason']})")
+        if result.get("success_count", 0) > 0:
+            await log_admin(f"Массовое начисление: {args['amount']} б. ({args['reason']}) — {result['success_count']} тестерам")
         return result
 
     # === ПРЕДУПРЕЖДЕНИЯ ===
     elif name == "issue_warning":
-        return await _issue_warning(args["username"], args["reason"], caller_id)
+        return await _issue_warning(args["username"], args.get("reason", "Без причины"), caller_id)
+
+    elif name == "issue_warning_bulk":
+        return await _issue_warning_bulk(args["usernames"], args.get("reason", "Без причины"), caller_id)
+
+    elif name == "remove_warning":
+        return await _remove_warning(args["usernames"], args.get("amount", 1), caller_id)
 
     # === ЗАДАНИЯ ===
     elif name == "create_task":
@@ -124,16 +133,52 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
         data = await get_rating(args.get("top_count", 0))
         comment = args.get("comment", "")
         from services.rating_service import publish_rating_to_topic, format_rating_message
-        bot = get_bot()
-        if bot:
-            msg_id = await publish_rating_to_topic(bot, data, comment)
-            data["published"] = bool(msg_id)
-        else:
-            data["published"] = False
-        data["formatted_message"] = format_rating_message(data)
+        formatted = format_rating_message(data)
         if comment:
-            data["formatted_message"] += f"\n\n{comment}"
-        await log_admin("Рейтинг опубликован в топик «Топ»")
+            formatted += f"\n\n{comment}"
+        data["formatted_message"] = formatted
+
+        bot = get_bot()
+        if not bot:
+            data["published"] = False
+            return data
+
+        # ЛС → превью + кнопки подтверждения
+        if topic == "private":
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            top_count = args.get("top_count", 0)
+            # Сохраняем параметры в callback_data
+            cb_data = f"rating_publish:{top_count}"
+            preview_text = (
+                f"📋 <b>Превью рейтинга</b>\n\n"
+                f"{formatted}\n\n"
+                f"─────────────────\n"
+                f"Опубликовать в топик «Топ»?"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Опубликовать", callback_data=cb_data),
+                    InlineKeyboardButton(text="❌ Отмена", callback_data="rating_cancel"),
+                ]
+            ])
+            try:
+                await bot.send_message(
+                    chat_id=caller_id,
+                    text=preview_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                print(f"❌ Ошибка отправки превью рейтинга: {e}")
+            data["published"] = False
+            data["awaiting_confirmation"] = True
+            return data
+
+        # Группа → публикуем сразу
+        msg_id = await publish_rating_to_topic(bot, data, comment)
+        data["published"] = bool(msg_id)
+        if msg_id:
+            await log_admin("Рейтинг опубликован в топик «Топ»")
         return data
 
     # === АДМИНЫ ===
@@ -148,6 +193,9 @@ async def _dispatch(name: str, args: dict, caller_id: int = None) -> dict:
 
     elif name == "search_bugs":
         return await _search_bugs(args["query"], args.get("tester"))
+
+    elif name == "refresh_testers":
+        return await _refresh_testers()
 
     else:
         return {"error": f"Неизвестная функция: {name}"}
@@ -221,30 +269,27 @@ async def _get_team_stats(period: str) -> dict:
 
 async def _get_inactive_testers(days: int) -> dict:
     db = await get_db()
-    try:
-        # Тестеры, у которых нет записей в points_log за N дней
-        cursor = await db.execute("""
-            SELECT t.username, t.full_name, t.total_points,
-                   MAX(pl.created_at) as last_activity
-            FROM testers t
-            LEFT JOIN points_log pl ON t.telegram_id = pl.tester_id
-            WHERE t.is_active = 1
-            GROUP BY t.telegram_id
-            HAVING last_activity IS NULL
-                OR last_activity < datetime('now', ? || ' days')
-        """, (f"-{days}",))
-        rows = await cursor.fetchall()
-        return {
-            "days": days,
-            "inactive_count": len(rows),
-            "testers": [
-                {"username": _tag(r["username"]), "full_name": r["full_name"],
-                 "last_activity": r["last_activity"]}
-                for r in rows
-            ]
-        }
-    finally:
-        await db.close()
+    # Тестеры, у которых нет записей в points_log за N дней
+    cursor = await db.execute("""
+        SELECT t.username, t.full_name, t.total_points,
+               MAX(pl.created_at) as last_activity
+        FROM testers t
+        LEFT JOIN points_log pl ON t.telegram_id = pl.tester_id
+        WHERE t.is_active = 1
+        GROUP BY t.telegram_id
+        HAVING last_activity IS NULL
+            OR last_activity < datetime('now', ? || ' days')
+    """, (f"-{days}",))
+    rows = await cursor.fetchall()
+    return {
+        "days": days,
+        "inactive_count": len(rows),
+        "testers": [
+            {"username": _tag(r["username"]), "full_name": r["full_name"],
+             "last_activity": r["last_activity"]}
+            for r in rows
+        ]
+    }
 
 
 async def _compare_testers(u1: str, u2: str) -> dict:
@@ -279,14 +324,11 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
     new_count = await increment_warnings(tester["telegram_id"])
 
     db = await get_db()
-    try:
-        await db.execute(
-            "INSERT INTO warnings (tester_id, reason, admin_id) VALUES (?, ?, ?)",
-            (tester["telegram_id"], reason, admin_id)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute(
+        "INSERT INTO warnings (tester_id, reason, admin_id) VALUES (?, ?, ?)",
+        (tester["telegram_id"], reason, admin_id)
+    )
+    await db.commit()
 
     await log_admin(f"Предупреждение @{tester['username']}: {reason} ({new_count}/3)")
 
@@ -294,14 +336,11 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
     deactivated = False
     if new_count >= 3:
         db2 = await get_db()
-        try:
-            await db2.execute(
-                "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
-                (tester["telegram_id"],)
-            )
-            await db2.commit()
-        finally:
-            await db2.close()
+        await db2.execute(
+            "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
+            (tester["telegram_id"],)
+        )
+        await db2.commit()
         deactivated = True
         await log_admin(f"Тестер @{tester['username']} деактивирован (3/3 предупреждений)")
 
@@ -335,19 +374,149 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
     }
 
 
+async def _issue_warning_bulk(usernames: str, reason: str, admin_id: int) -> dict:
+    """Выдаёт варны нескольким тестерам или всем сразу."""
+    from models.admin import get_all_admins
+
+    usernames = usernames.strip()
+
+    # === Всем тестерам ===
+    if usernames.lower() == "all":
+        testers = await get_all_testers(active_only=True)
+        admins = await get_all_admins()
+        admin_ids = {a["telegram_id"] for a in admins}
+        testers = [t for t in testers if t["telegram_id"] not in admin_ids]
+        names = [t["username"] for t in testers if t.get("username")]
+    else:
+        names = [_normalize_username(u.strip()) for u in usernames.split(",") if u.strip()]
+
+    if not names:
+        return {"error": "Не указаны юзернеймы"}
+
+    results = []
+    for uname in names:
+        result = await _issue_warning(uname, reason, admin_id)
+        results.append(result)
+
+    success_count = sum(1 for r in results if r.get("success"))
+    return {
+        "success": success_count > 0,
+        "results": results,
+        "success_count": success_count,
+        "reason": reason,
+    }
+
+
+async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
+    """Снимает варны у одного, нескольких или всех тестеров."""
+    usernames = usernames.strip()
+
+    # === Снять у всех ===
+    if usernames.lower() == "all":
+        affected = await reset_all_warnings()
+        # Удаляем записи из таблицы warnings
+        db = await get_db()
+        await db.execute("DELETE FROM warnings")
+        await db.commit()
+        await log_admin(f"Сброшены все варны ({affected} тестеров)")
+        return {
+            "success": True,
+            "action": "reset_all",
+            "affected_count": affected,
+        }
+
+    # === Парсим список юзернеймов ===
+    names = [_normalize_username(u.strip()) for u in usernames.split(",") if u.strip()]
+    if not names:
+        return {"error": "Не указаны юзернеймы"}
+
+    results = []
+    for uname in names:
+        tester = await get_tester_by_username(uname)
+        if not tester:
+            results.append({"username": f"@{uname}", "error": "не найден"})
+            continue
+
+        old_count = tester["warnings_count"]
+        if old_count == 0:
+            results.append({"username": _tag(tester["username"]), "warnings": 0, "skipped": True})
+            continue
+
+        # amount=0 означает сбросить все варны
+        if amount == 0:
+            new_count = await reset_warnings(tester["telegram_id"])
+            # Удаляем все записи варнов тестера
+            db = await get_db()
+            await db.execute("DELETE FROM warnings WHERE tester_id = ?", (tester["telegram_id"],))
+            await db.commit()
+        else:
+            new_count = await decrement_warnings(tester["telegram_id"], amount)
+            # Удаляем последние N записей варнов
+            db = await get_db()
+            await db.execute(
+                "DELETE FROM warnings WHERE id IN ("
+                "  SELECT id FROM warnings WHERE tester_id = ? ORDER BY created_at DESC LIMIT ?"
+                ")",
+                (tester["telegram_id"], amount)
+            )
+            await db.commit()
+
+        # Реактивируем если был деактивирован по варнам и теперь < 3
+        if not tester["is_active"] and new_count < 3:
+            db = await get_db()
+            await db.execute(
+                "UPDATE testers SET is_active = 1 WHERE telegram_id = ?",
+                (tester["telegram_id"],)
+            )
+            await db.commit()
+
+        await log_admin(f"Снят варн @{tester['username']}: {old_count} → {new_count}")
+
+        # Уведомляем тестера в ЛС
+        bot = get_bot()
+        if bot:
+            try:
+                text = (
+                    f"✅ <b>Варн снят</b>\n\n"
+                    f"Предупреждений: <b>{new_count} из 3</b>."
+                )
+                if not tester["is_active"] and new_count < 3:
+                    text += "\n\n🔓 <b>Вы снова активны.</b>"
+                await bot.send_message(
+                    chat_id=tester["telegram_id"],
+                    text=text,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        results.append({
+            "username": _tag(tester["username"]),
+            "old_warnings": old_count,
+            "new_warnings": new_count,
+            "reactivated": not tester["is_active"] and new_count < 3,
+        })
+
+    success_count = sum(1 for r in results if "error" not in r and not r.get("skipped"))
+    return {
+        "success": success_count > 0,
+        "results": results,
+        "success_count": success_count,
+    }
+
+
 async def _create_task(brief: str, admin_id: int) -> dict:
     """Создаёт черновик задания: расширяет через ИИ и отправляет на подтверждение."""
     import html as html_module
-    import anthropic
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    from config import ANTHROPIC_API_KEY, MODEL_CHEAP
+    from agent.brain import _call_claude
+    from config import MODEL
 
     # Расширяем задание через ИИ
     full_text = brief
     try:
-        claude_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        response = await claude_client.messages.create(
-            model=MODEL_CHEAP,
+        response = await _call_claude(
+            model=MODEL,
             messages=[{
                 "role": "user",
                 "content": (
@@ -377,15 +546,12 @@ async def _create_task(brief: str, admin_id: int) -> dict:
 
     # Сохраняем в базу как черновик
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "INSERT INTO tasks (admin_id, brief, full_text, status) VALUES (?, ?, ?, 'draft')",
-            (admin_id, brief, full_text)
-        )
-        await db.commit()
-        task_id = cursor.lastrowid
-    finally:
-        await db.close()
+    cursor = await db.execute(
+        "INSERT INTO tasks (admin_id, brief, full_text, status) VALUES (?, ?, ?, 'draft')",
+        (admin_id, brief, full_text)
+    )
+    await db.commit()
+    task_id = cursor.lastrowid
 
     # Отправляем превью админу на подтверждение
     bot = get_bot()
@@ -460,32 +626,77 @@ async def _manage_admin(action: str, username: str = None) -> dict:
     return {"error": f"Неизвестное действие: {action}"}
 
 
+async def _refresh_testers() -> dict:
+    """Проверяет членство каждого тестера в группе и деактивирует кикнутых/ушедших."""
+    from config import GROUP_ID
+    from models.admin import get_all_admins
+
+    bot = get_bot()
+    if not bot:
+        return {"error": "Бот недоступен"}
+    if not GROUP_ID:
+        return {"error": "GROUP_ID не задан"}
+
+    testers = await get_all_testers(active_only=True)
+    admins = await get_all_admins()
+    admin_ids = {a["telegram_id"] for a in admins}
+
+    deactivated = []
+    still_active = []
+
+    for t in testers:
+        if t["telegram_id"] in admin_ids:
+            continue
+        try:
+            member = await bot.get_chat_member(GROUP_ID, t["telegram_id"])
+            if member.status in ("left", "kicked"):
+                db = await get_db()
+                await db.execute(
+                    "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
+                    (t["telegram_id"],)
+                )
+                await db.commit()
+                deactivated.append(_tag(t["username"]) or t["full_name"])
+            else:
+                still_active.append(_tag(t["username"]) or t["full_name"])
+        except Exception:
+            # Не удалось проверить — оставляем как есть
+            still_active.append(_tag(t["username"]) or t["full_name"])
+
+    if deactivated:
+        await log_admin(f"Обновление тестеров: деактивированы {', '.join(deactivated)}")
+
+    return {
+        "success": True,
+        "active_count": len(still_active),
+        "deactivated_count": len(deactivated),
+        "deactivated": deactivated,
+    }
+
+
 async def _search_bugs(query: str, tester: str = None) -> dict:
     db = await get_db()
-    try:
-        sql = """SELECT b.id, b.title, b.type, b.status, b.created_at, t.username
-                 FROM bugs b
-                 JOIN testers t ON b.tester_id = t.telegram_id
-                 WHERE (b.title LIKE ? OR b.description LIKE ?)"""
-        params = [f"%{query}%", f"%{query}%"]
+    sql = """SELECT b.id, b.title, b.type, b.status, b.created_at, t.username
+             FROM bugs b
+             JOIN testers t ON b.tester_id = t.telegram_id
+             WHERE (b.title LIKE ? OR b.description LIKE ?)"""
+    params = [f"%{query}%", f"%{query}%"]
 
-        if tester:
-            sql += " AND LOWER(t.username) = LOWER(?)"
-            params.append(_normalize_username(tester))
+    if tester:
+        sql += " AND LOWER(t.username) = LOWER(?)"
+        params.append(_normalize_username(tester))
 
-        sql += " ORDER BY b.id DESC LIMIT 20"
-        cursor = await db.execute(sql, params)
-        rows = await cursor.fetchall()
-        bugs = []
-        for r in rows:
-            bug = dict(r)
-            if bug.get("username"):
-                bug["username"] = _tag(bug["username"])
-            bugs.append(bug)
-        return {
-            "query": query,
-            "count": len(bugs),
-            "bugs": bugs
-        }
-    finally:
-        await db.close()
+    sql += f" ORDER BY b.id DESC LIMIT {SEARCH_BUGS_LIMIT}"
+    cursor = await db.execute(sql, params)
+    rows = await cursor.fetchall()
+    bugs = []
+    for r in rows:
+        bug = dict(r)
+        if bug.get("username"):
+            bug["username"] = _tag(bug["username"])
+        bugs.append(bug)
+    return {
+        "query": query,
+        "count": len(bugs),
+        "bugs": bugs
+    }

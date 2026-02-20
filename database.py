@@ -1,14 +1,20 @@
 """
 База данных SQLite — инициализация таблиц и вспомогательные функции.
+Использует единое разделяемое соединение с WAL-mode для конкурентного доступа.
 """
 import aiosqlite
 import os
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "qa_agent.db")
 
+# Единое разделяемое соединение
+_shared_db: aiosqlite.Connection | None = None
+
 
 async def init_db():
-    """Создаёт все таблицы если их нет."""
+    """Создаёт все таблицы если их нет и открывает shared-соединение."""
+    global _shared_db
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
             -- Тестеры
@@ -48,19 +54,6 @@ async def init_db():
                 type TEXT DEFAULT 'bug',
                 status TEXT DEFAULT 'pending',
                 weeek_task_id TEXT,
-                points_awarded INTEGER DEFAULT 0,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-
-            -- Отчёты (скриншоты)
-            CREATE TABLE IF NOT EXISTS reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tester_id BIGINT NOT NULL,
-                message_id BIGINT,
-                games_count INTEGER DEFAULT 0,
-                claimed_count INTEGER DEFAULT 0,
-                screenshot_file_id TEXT,
-                status TEXT DEFAULT 'accepted',
                 points_awarded INTEGER DEFAULT 0,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -120,11 +113,27 @@ async def init_db():
             except Exception:
                 pass  # Колонка уже существует
 
+    # Открываем shared-соединение с WAL-mode
+    _shared_db = await aiosqlite.connect(DB_PATH)
+    _shared_db.row_factory = aiosqlite.Row
+    await _shared_db.execute("PRAGMA journal_mode=WAL")
+
     print("✅ База данных инициализирована")
 
 
 async def get_db() -> aiosqlite.Connection:
-    """Возвращает соединение с БД. Не забудьте закрыть!"""
-    db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    return db
+    """Возвращает shared-соединение с БД. НЕ закрывайте его!"""
+    global _shared_db
+    if _shared_db is None:
+        _shared_db = await aiosqlite.connect(DB_PATH)
+        _shared_db.row_factory = aiosqlite.Row
+        await _shared_db.execute("PRAGMA journal_mode=WAL")
+    return _shared_db
+
+
+async def close_db():
+    """Закрывает shared-соединение. Вызывать при остановке бота."""
+    global _shared_db
+    if _shared_db:
+        await _shared_db.close()
+        _shared_db = None

@@ -12,6 +12,23 @@ WEEEK_BOARDS = []  # Кэш досок: [{"id": 1, "name": "ПАТЧ"}, ...]
 
 BASE_URL = "https://api.weeek.net/public/v1"
 
+# Shared HTTP-клиент — переиспользует TCP-соединения
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Возвращает shared httpx-клиент."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=15.0,
+            headers={
+                "Authorization": f"Bearer {WEEEK_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+    return _http_client
+
 
 async def _request(method: str, endpoint: str, data: dict = None) -> dict:
     """Выполняет асинхронный запрос к Weeek API."""
@@ -19,21 +36,16 @@ async def _request(method: str, endpoint: str, data: dict = None) -> dict:
         return {"error": "WEEEK_API_KEY не задан"}
 
     url = f"{BASE_URL}/{endpoint}"
-    headers = {
-        "Authorization": f"Bearer {WEEEK_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    client = _get_client()
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.request(
-                method=method,
-                url=url,
-                headers=headers,
-                json=data,
-            )
-            response.raise_for_status()
-            return response.json()
+        response = await client.request(
+            method=method,
+            url=url,
+            json=data,
+        )
+        response.raise_for_status()
+        return response.json()
     except httpx.HTTPStatusError as e:
         try:
             return e.response.json()
@@ -105,19 +117,16 @@ async def upload_attachment(task_id: str, file_bytes: bytes, filename: str) -> d
         return {"error": "WEEEK_API_KEY не задан", "success": False}
 
     url = f"{BASE_URL}/tm/tasks/{task_id}/attachments"
-    headers = {
-        "Authorization": f"Bearer {WEEEK_API_KEY}",
-    }
+    client = _get_client()
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                headers=headers,
-                files={"files[]": (filename, file_bytes)},
-            )
-            response.raise_for_status()
-            return {"success": True}
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {WEEEK_API_KEY}"},
+            files={"files[]": (filename, file_bytes)},
+        )
+        response.raise_for_status()
+        return {"success": True}
     except httpx.HTTPStatusError as e:
         print(f"❌ Weeek upload {e.response.status_code}: {e.response.text[:200]}")
         return {"success": False, "error": f"HTTP {e.response.status_code}"}

@@ -13,9 +13,6 @@
 - dup_no:{bug_id}:{points}      — не дубль, принять баг
 - weeek:{bug_id}:{board}:{col}  — выбор доски (старый формат)
 
-Отчёты:
-- report_accept:{report_id}:{count}
-- report_reject:{report_id}
 """
 import html
 from aiogram import Router, F
@@ -29,8 +26,114 @@ from database import get_db
 router = Router()
 
 
+async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
+    """Общая логика принятия бага: статус, баллы, points_log, счётчики. Возвращает начисленные баллы."""
+    points = bug["points_awarded"]
+
+    db = await get_db()
+    await db.execute(
+        "UPDATE bugs SET status = 'accepted' WHERE id = ?", (bug_id,)
+    )
+    await db.commit()
+
+    await update_tester_points(bug["tester_id"], points)
+    if bug["type"] == "crash":
+        await update_tester_stats(bug["tester_id"], crashes=1)
+    else:
+        await update_tester_stats(bug["tester_id"], bugs=1)
+
+    # Запись в points_log
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
+        (bug["tester_id"], points,
+         f"{'Краш' if bug['type'] == 'crash' else 'Баг'} #{bug_id} принят",
+         "bug", admin_id)
+    )
+    await db.commit()
+
+    # Уведомляем тестера в ЛС
+    bot = get_bot()
+    if bot:
+        try:
+            emoji = "💥" if bug["type"] == "crash" else "✅"
+            await bot.send_message(
+                chat_id=bug["tester_id"],
+                text=(
+                    f"{emoji} Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
+                    f"<b>#{bug_id}</b> принят! +{points} б. 🎉"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    return points
+
+
 # ─────────────────────────────────────────────
-#  НОВЫЙ ФЛОУ: подтверждение бага владельцем
+#  Тестер: отправить без файла / прикрепить файл
+# ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("bug_nofile_yes:"))
+async def handle_bug_nofile_yes(callback: CallbackQuery):
+    """Тестер решил отправить баг без файла."""
+    bug_id = int(callback.data.split(":")[1])
+    bug = await get_bug(bug_id)
+    if not bug:
+        await callback.answer("Баг не найден", show_alert=True)
+        return
+
+    if bug["status"] != "waiting_file":
+        await callback.answer("Баг уже обработан", show_alert=True)
+        return
+
+    # Только автор бага может нажимать
+    if callback.from_user.id != bug["tester_id"]:
+        await callback.answer("Это не твой баг", show_alert=True)
+        return
+
+    from handlers.bug_handler import submit_bug_without_file
+    success = await submit_bug_without_file(bug_id)
+
+    if success:
+        await callback.message.edit_text(
+            f"🐛 Баг <b>#{bug_id}</b> отправлен владельцу на подтверждение ⏳",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+        await callback.answer("Баг отправлен")
+    else:
+        await callback.answer("Не удалось отправить баг", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("bug_nofile_no:"))
+async def handle_bug_nofile_no(callback: CallbackQuery):
+    """Тестер хочет прикрепить файл — ждём."""
+    bug_id = int(callback.data.split(":")[1])
+    bug = await get_bug(bug_id)
+    if not bug:
+        await callback.answer("Баг не найден", show_alert=True)
+        return
+
+    if bug["status"] != "waiting_file":
+        await callback.answer("Баг уже обработан", show_alert=True)
+        return
+
+    if callback.from_user.id != bug["tester_id"]:
+        await callback.answer("Это не твой баг", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"📎 Отправь файл в этот топик — он прикрепится к багу <b>#{bug_id}</b>.",
+        parse_mode="HTML",
+        reply_markup=None,
+    )
+    await callback.answer()
+
+
+# ─────────────────────────────────────────────
+#  Подтверждение бага владельцем
 # ─────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("bug_confirm:"))
@@ -51,39 +154,7 @@ async def handle_bug_confirm(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
-    points = bug["points_awarded"]
-
-    # Принимаем баг и начисляем баллы
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE bugs SET status = 'accepted' WHERE id = ?", (bug_id,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-    await update_tester_points(bug["tester_id"], points)
-    if bug["type"] == "crash":
-        await update_tester_stats(bug["tester_id"], crashes=1)
-    else:
-        await update_tester_stats(bug["tester_id"], bugs=1)
-
-    # Уведомляем тестера в ЛС
-    bot = get_bot()
-    if bot:
-        try:
-            emoji = "💥" if bug["type"] == "crash" else "✅"
-            await bot.send_message(
-                chat_id=bug["tester_id"],
-                text=(
-                    f"{emoji} Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
-                    f"<b>#{bug_id}</b> принят! +{points} б. 🎉"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+    points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek
     await _show_board_selection(callback, bug_id)
@@ -112,11 +183,8 @@ async def handle_bug_reject(callback: CallbackQuery):
         return
 
     db = await get_db()
-    try:
-        await db.execute("UPDATE bugs SET status = 'rejected' WHERE id = ?", (bug_id,))
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute("UPDATE bugs SET status = 'rejected' WHERE id = ?", (bug_id,))
+    await db.commit()
 
     # Уведомляем тестера
     bot = get_bot()
@@ -277,14 +345,11 @@ async def _create_weeek_task_and_finish(
         task_id = str(result.get("task_id", ""))
 
         db = await get_db()
-        try:
-            await db.execute(
-                "UPDATE bugs SET weeek_task_id = ? WHERE id = ?",
-                (task_id, bug_id),
-            )
-            await db.commit()
-        finally:
-            await db.close()
+        await db.execute(
+            "UPDATE bugs SET weeek_task_id = ? WHERE id = ?",
+            (task_id, bug_id),
+        )
+        await db.commit()
 
         # Прикрепляем файл из Telegram к задаче Weeek
         file_id = bug.get("file_id")
@@ -354,54 +419,51 @@ async def handle_task_publish(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
 
     db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        task = await cursor.fetchone()
-        if not task:
-            await callback.answer("Задание не найдено", show_alert=True)
-            return
-        task = dict(task)
+    cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    task = await cursor.fetchone()
+    if not task:
+        await callback.answer("Задание не найдено", show_alert=True)
+        return
+    task = dict(task)
 
-        if task.get("status") != "draft":
-            await callback.answer("Задание уже обработано", show_alert=True)
-            return
+    if task.get("status") != "draft":
+        await callback.answer("Задание уже обработано", show_alert=True)
+        return
 
-        # Публикуем в топик
-        from config import GROUP_ID, TOPIC_IDS
-        from datetime import datetime
+    # Публикуем в топик
+    from config import GROUP_ID, TOPIC_IDS
+    from datetime import datetime
 
-        bot = get_bot()
-        topic_id = TOPIC_IDS.get("tasks")
-        published = False
-        if topic_id and GROUP_ID and bot:
-            now = datetime.now().strftime("%d.%m.%Y")
-            safe_text = html.escape(task['full_text'])
-            message_text = (
-                f"📋 <b>Задание #{task_id}</b> | {now}\n\n"
-                f"{safe_text}\n\n"
-                f"📝 Баги → топик «Баги», краши → «Краши», скрины → «Отчёты»."
+    bot = get_bot()
+    topic_id = TOPIC_IDS.get("tasks")
+    published = False
+    if topic_id and GROUP_ID and bot:
+        now = datetime.now().strftime("%d.%m.%Y")
+        safe_text = html.escape(task['full_text'])
+        message_text = (
+            f"📋 <b>Задание #{task_id}</b> | {now}\n\n"
+            f"{safe_text}\n\n"
+            f"📝 Баги → топик «Баги», скрины → «Отчёты»."
+        )
+        try:
+            msg = await bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+                text=message_text,
+                parse_mode="HTML",
             )
-            try:
-                msg = await bot.send_message(
-                    chat_id=GROUP_ID,
-                    message_thread_id=topic_id,
-                    text=message_text,
-                    parse_mode="HTML",
-                )
-                await db.execute(
-                    "UPDATE tasks SET status = 'published', message_id = ? WHERE id = ?",
-                    (msg.message_id, task_id)
-                )
-                await db.commit()
-                published = True
-            except Exception as e:
-                print(f"❌ Ошибка публикации задания: {e}")
-
-        if not published:
-            await db.execute("UPDATE tasks SET status = 'published' WHERE id = ?", (task_id,))
+            await db.execute(
+                "UPDATE tasks SET status = 'published', message_id = ? WHERE id = ?",
+                (msg.message_id, task_id)
+            )
             await db.commit()
-    finally:
-        await db.close()
+            published = True
+        except Exception as e:
+            print(f"❌ Ошибка публикации задания: {e}")
+
+    if not published:
+        await db.execute("UPDATE tasks SET status = 'published' WHERE id = ?", (task_id,))
+        await db.commit()
 
     try:
         original_html = callback.message.html_text or html.escape(callback.message.text or "")
@@ -433,11 +495,8 @@ async def handle_task_cancel(callback: CallbackQuery):
     task_id = int(callback.data.split(":")[1])
 
     db = await get_db()
-    try:
-        await db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ?", (task_id,))
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ?", (task_id,))
+    await db.commit()
 
     try:
         original_html = callback.message.html_text or html.escape(callback.message.text or "")
@@ -456,6 +515,76 @@ async def handle_task_cancel(callback: CallbackQuery):
             pass
     await callback.answer("Задание отменено")
     await log_info(f"Задание #{task_id} отменено @{callback.from_user.username}")
+
+
+# ─────────────────────────────────────────────
+#  РЕЙТИНГ: подтверждение публикации из ЛС
+# ─────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("rating_publish:"))
+async def handle_rating_publish(callback: CallbackQuery):
+    """Админ/владелец подтвердил публикацию рейтинга из ЛС."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может публиковать", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    top_count = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+
+    from services.rating_service import get_rating, publish_rating_to_topic
+
+    data = await get_rating(top_count)
+    bot = get_bot()
+    if not bot:
+        await callback.answer("Бот недоступен", show_alert=True)
+        return
+
+    msg_id = await publish_rating_to_topic(bot, data, "")
+    if msg_id:
+        try:
+            original_html = callback.message.html_text or html.escape(callback.message.text or "")
+            await callback.message.edit_text(
+                original_html + "\n\n✅ <b>Опубликовано!</b>",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await callback.message.edit_text(
+                    (callback.message.text or "") + "\n\n✅ Опубликовано!",
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        await callback.answer("Рейтинг опубликован")
+        await log_admin(f"Рейтинг опубликован в топик «Топ» (@{callback.from_user.username})")
+    else:
+        await callback.answer("Ошибка публикации", show_alert=True)
+
+
+@router.callback_query(F.data == "rating_cancel")
+async def handle_rating_cancel(callback: CallbackQuery):
+    """Админ/владелец отменил публикацию рейтинга."""
+    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
+        await callback.answer("Только админ может отменять", show_alert=True)
+        return
+
+    try:
+        original_html = callback.message.html_text or html.escape(callback.message.text or "")
+        await callback.message.edit_text(
+            original_html + "\n\n❌ <b>Отменено</b>",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception:
+        try:
+            await callback.message.edit_text(
+                (callback.message.text or "") + "\n\n❌ Отменено",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+    await callback.answer("Публикация отменена")
 
 
 # ─────────────────────────────────────────────
@@ -522,39 +651,7 @@ async def handle_dup_notdup(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
-    points = bug["points_awarded"]
-
-    # Принимаем баг и начисляем баллы
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE bugs SET status = 'accepted' WHERE id = ?", (bug_id,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-    await update_tester_points(bug["tester_id"], points)
-    if bug["type"] == "crash":
-        await update_tester_stats(bug["tester_id"], crashes=1)
-    else:
-        await update_tester_stats(bug["tester_id"], bugs=1)
-
-    # Уведомляем тестера
-    bot = get_bot()
-    if bot:
-        try:
-            emoji = "💥" if bug["type"] == "crash" else "✅"
-            await bot.send_message(
-                chat_id=bug["tester_id"],
-                text=(
-                    f"{emoji} Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
-                    f"<b>#{bug_id}</b> принят! +{points} б. 🎉"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+    points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek
     await _show_board_selection(callback, bug_id)
@@ -566,7 +663,7 @@ async def handle_dup_notdup(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("dup_yes:"))
 async def handle_dup_yes(callback: CallbackQuery):
-    """Админ подтвердил: это дубль (старый флоу)."""
+    """DEPRECATED: старый флоу. Оставлен для кнопок, отправленных до обновления."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может решать", show_alert=True)
         return
@@ -584,7 +681,7 @@ async def handle_dup_yes(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("dup_no:"))
 async def handle_dup_no(callback: CallbackQuery):
-    """Админ решил: не дубль, принять."""
+    """DEPRECATED: старый флоу. Оставлен для кнопок, отправленных до обновления."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может решать", show_alert=True)
         return
@@ -592,9 +689,6 @@ async def handle_dup_no(callback: CallbackQuery):
     parts = callback.data.split(":")
     try:
         bug_id = int(parts[1])
-        points = int(parts[2]) if len(parts) > 2 else 3
-        if points <= 0:
-            points = 3
     except (IndexError, ValueError):
         await callback.answer("Некорректные данные кнопки", show_alert=True)
         return
@@ -605,30 +699,18 @@ async def handle_dup_no(callback: CallbackQuery):
         return
 
     # Защита от двойного нажатия
-    if bug["status"] == "accepted":
-        await callback.answer("Баг уже принят", show_alert=True)
+    if bug["status"] != "pending":
+        await callback.answer("Баг уже обработан", show_alert=True)
         return
 
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE bugs SET status = 'accepted', points_awarded = ? WHERE id = ?",
-            (points, bug_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    points = bug["points_awarded"] or 3
 
-    await update_tester_points(bug["tester_id"], points)
-    if bug["type"] == "crash":
-        await update_tester_stats(bug["tester_id"], crashes=1)
-    else:
-        await update_tester_stats(bug["tester_id"], bugs=1)
+    points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     from services.weeek_service import create_task as weeek_create_task
     weeek_result = await weeek_create_task(
-        title=bug["title"],
-        description=bug["description"],
+        title=bug.get("script_name") or bug.get("title", ""),
+        description=bug.get("steps") or bug.get("description", ""),
         bug_type=bug["type"],
         bug_id=bug_id,
     )
@@ -647,7 +729,7 @@ async def handle_dup_no(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("weeek:"))
 async def handle_weeek_board_legacy(callback: CallbackQuery):
-    """Старый формат выбора доски (backward compat)."""
+    """DEPRECATED: старый формат выбора доски. Оставлен для кнопок, отправленных до обновления."""
     if not await is_owner(callback.from_user.id):
         await callback.answer("Только владелец может выбирать доску", show_alert=True)
         return
@@ -659,84 +741,3 @@ async def handle_weeek_board_legacy(callback: CallbackQuery):
 
     await _create_weeek_task_and_finish(callback, bug_id, board_id, col_id)
 
-
-# ─────────────────────────────────────────────
-#  Отчёты (скриншоты)
-# ─────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("report_accept:"))
-async def handle_report_accept(callback: CallbackQuery):
-    """Админ принял отчёт с определённым количеством игр."""
-    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
-        await callback.answer("Только админ может решать", show_alert=True)
-        return
-
-    parts = callback.data.split(":")
-    try:
-        report_id = int(parts[1])
-        games = int(parts[2])
-        if games <= 0:
-            games = 1
-    except (IndexError, ValueError):
-        await callback.answer("Некорректные данные кнопки", show_alert=True)
-        return
-
-    db = await get_db()
-    try:
-        cursor = await db.execute("SELECT * FROM reports WHERE id = ?", (report_id,))
-        report = await cursor.fetchone()
-        if not report:
-            await callback.answer("Отчёт не найден", show_alert=True)
-            return
-        report = dict(report)
-
-        # Защита от двойного нажатия
-        if report.get("status") == "accepted" and report.get("points_awarded", 0) > 0:
-            await callback.answer("Отчёт уже принят", show_alert=True)
-            return
-
-        points = games
-
-        await db.execute(
-            "UPDATE reports SET status = 'accepted', games_count = ?, points_awarded = ? WHERE id = ?",
-            (games, points, report_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-    await update_tester_points(report["tester_id"], points)
-    await update_tester_stats(report["tester_id"], games=games)
-
-    await callback.message.edit_text(
-        (callback.message.text or "") + (
-            f"\n\n✅ Принято: {games} игр, +{points} б. (@{callback.from_user.username})"
-        ),
-        parse_mode="HTML",
-    )
-    await callback.answer(f"Принято {games} игр")
-    await log_info(f"Отчёт #{report_id}: принято {games} игр, +{points} б.")
-
-
-@router.callback_query(F.data.startswith("report_reject:"))
-async def handle_report_reject(callback: CallbackQuery):
-    """Админ отклонил отчёт."""
-    if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
-        await callback.answer("Только админ может решать", show_alert=True)
-        return
-
-    report_id = int(callback.data.split(":")[1])
-
-    db = await get_db()
-    try:
-        await db.execute("UPDATE reports SET status = 'rejected' WHERE id = ?", (report_id,))
-        await db.commit()
-    finally:
-        await db.close()
-
-    await callback.message.edit_text(
-        (callback.message.text or "") + f"\n\n❌ Отклонён (@{callback.from_user.username})",
-        parse_mode="HTML",
-    )
-    await callback.answer("Отчёт отклонён")
-    await log_info(f"Отчёт #{report_id} отклонён @{callback.from_user.username}")

@@ -18,17 +18,20 @@ async def get_rating(top_count: int = 0) -> dict:
     Формирует рейтинг тестеров (без админов и владельца).
     top_count=0 — все тестеры.
     """
-    all_testers = await get_all_testers()
+    all_testers = await get_all_testers(active_only=False)
     admin_ids = await _get_admin_ids()
 
-    # Исключаем админов и владельца из рейтинга
-    testers = [t for t in all_testers if t["telegram_id"] not in admin_ids]
+    # Все тестеры (без админов) — для общей статистики
+    all_non_admin = [t for t in all_testers if t["telegram_id"] not in admin_ids]
+
+    # Активные — для рейтинга
+    active_testers = [t for t in all_non_admin if t["is_active"]]
 
     if top_count > 0:
-        testers = testers[:top_count]
+        active_testers = active_testers[:top_count]
 
     rating_list = []
-    for i, t in enumerate(testers, 1):
+    for i, t in enumerate(active_testers, 1):
         raw = t["username"] or t["full_name"] or f"id:{t['telegram_id']}"
         tag = f"@{raw}" if t["username"] and not raw.startswith("id:") else raw
         rating_list.append({
@@ -40,14 +43,11 @@ async def get_rating(top_count: int = 0) -> dict:
             "total_games": t["total_games"],
         })
 
-    # Общая статистика тоже только по тестерам
-    total_all = await get_all_testers(active_only=False)
-    total_testers_only = [t for t in total_all if t["telegram_id"] not in admin_ids]
     return {
         "rating": rating_list,
-        "total_testers": len(total_testers_only),
-        "total_bugs": sum(t["total_bugs"] for t in total_testers_only),
-        "total_games": sum(t["total_games"] for t in total_testers_only),
+        "total_testers": len(all_non_admin),
+        "total_bugs": sum(t["total_bugs"] for t in all_non_admin),
+        "total_games": sum(t["total_games"] for t in all_non_admin),
     }
 
 

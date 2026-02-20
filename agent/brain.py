@@ -7,9 +7,9 @@ import time
 import asyncio
 from collections import OrderedDict
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL_AGENT, MODEL_CHEAP
+from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
 from agent.system_prompt import get_system_prompt
-from agent.tools import get_tools_for_role
+from agent.tools import match_tools
 from agent.tool_executor import execute_tool
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -17,9 +17,9 @@ client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 # === Защита от перерасхода лимита ===
 MIN_INTERVAL = 1.0
 _last_request_time = 0.0
+_throttle_lock = asyncio.Lock()
 
 # === История диалогов per-user с LRU-лимитом ===
-_MAX_USERS = 200
 
 _conversation_history: OrderedDict[int, list] = OrderedDict()
 
@@ -29,7 +29,7 @@ def _get_history(caller_id: int) -> list:
     if caller_id in _conversation_history:
         _conversation_history.move_to_end(caller_id)
         return _conversation_history[caller_id]
-    if len(_conversation_history) >= _MAX_USERS:
+    if len(_conversation_history) >= MAX_USERS_CACHE:
         _conversation_history.popitem(last=False)
     _conversation_history[caller_id] = []
     return _conversation_history[caller_id]
@@ -39,13 +39,6 @@ def clear_history(caller_id: int):
     """Сбрасывает историю диалога для пользователя (при смене роли)."""
     _conversation_history.pop(caller_id, None)
 
-
-# Максимум пар сообщений в истории по ролям
-_MAX_HISTORY: dict[str, int] = {
-    "tester": 2,   # Тестеры спрашивают просто — короткая история
-    "admin": 2,    # Админы делают команды — длинная история не нужна
-    "owner": 3,    # Владельцу чуть больше контекста
-}
 
 # Мгновенные ответы БЕЗ вызова Claude API — экономим токены
 INSTANT_REPLIES = {
@@ -64,14 +57,6 @@ INSTANT_REPLIES = {
     "благодарю": "Всегда пожалуйста! 😊",
     "ок": "👍",
     "окей": "👍",
-    "ладно": "👍",
-    "хорошо": "👍",
-    "понял": "👍",
-    "поняла": "👍",
-    "ясно": "👍",
-    "понятно": "👍",
-    "да": "👍",
-    "нет": "Хорошо.",
     "круто": "😊",
     "отлично": "😊",
     "супер": "🔥",
@@ -86,8 +71,11 @@ INSTANT_REPLIES = {
         "• «Статистика @username» — баллы тестера\n"
         "• «Начисли @username N баллов за ...» — начислить\n"
         "• «Предупреди @username за ...» — предупреждение\n"
+        "• «Сними варн @username» — снять предупреждение\n"
+        "• «Сними варны всем» — сбросить все предупреждения\n"
         "• «Кто не работал N дней?» — неактивные\n"
         "• «Дай задание — ...» — создать задание\n\n"
+        "💡 Можно ответить реплаем на сообщение тестера и написать команду — бот поймёт кого имеешь в виду.\n\n"
         "📝 Багрепорты → топик «Баги» или «Краши»"
     ),
     "help": (
@@ -95,23 +83,26 @@ INSTANT_REPLIES = {
         "• Рейтинг\n• Статистика @username\n"
         "• Начисли @username N баллов за ...\n"
         "• Предупреди @username за ...\n"
-        "• Дай задание — ..."
+        "• Сними варн @username\n"
+        "• Дай задание — ...\n\n"
+        "💡 Reply на сообщение тестера + команда — работает."
     ),
     "что ты умеешь": (
         "📋 <b>Что умею:</b>\n\n"
         "• Рейтинг и статистика тестеров\n"
         "• Начисление/списание баллов\n"
-        "• Предупреждения (макс 3)\n"
+        "• Предупреждения: выдать / снять / сбросить (макс 3)\n"
         "• Создание заданий для тестеров\n"
         "• Приём багрепортов → Weeek\n"
-        "• Аналитика по команде"
+        "• Аналитика по команде\n\n"
+        "💡 Можно ответить реплаем на сообщение тестера."
     ),
 }
 
 
 def get_instant_reply(text: str) -> str | None:
     """Мгновенный ответ без вызова API."""
-    clean = text.lower().strip().rstrip("!?.,)")
+    clean = re.sub(r'[!?.,)]+$', '', text.lower().strip())
     return INSTANT_REPLIES.get(clean)
 
 
@@ -154,13 +145,15 @@ async def try_direct_command(text: str, caller_id: int) -> str | None:
 
 
 def _max_history(role: str) -> int:
-    return _MAX_HISTORY.get(role, 3)
+    return MAX_HISTORY.get(role, 3)
 
 
 def _trim_history(history: list, role: str = "tester"):
     limit = _max_history(role) * 2
     while len(history) > limit:
         history.pop(0)
+
+
 
 
 def _serialize_content(content) -> list[dict]:
@@ -179,28 +172,16 @@ def _serialize_content(content) -> list[dict]:
     return result
 
 
-def _build_system_with_cache(system_prompt: str) -> list[dict]:
-    """Оборачивает system prompt в формат с cache_control."""
-    return [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
-
-
-def _build_tools_with_cache(tools: list) -> list:
-    """Добавляет cache_control к последнему инструменту — кэшируются все до него."""
-    if not tools:
-        return tools
-    result = [t.copy() for t in tools]
-    result[-1] = {**result[-1], "cache_control": {"type": "ephemeral"}}
-    return result
-
 
 async def _throttle():
     """Ждём если запросы слишком частые."""
     global _last_request_time
-    now = time.time()
-    elapsed = now - _last_request_time
-    if elapsed < MIN_INTERVAL:
-        await asyncio.sleep(MIN_INTERVAL - elapsed)
-    _last_request_time = time.time()
+    async with _throttle_lock:
+        now = time.time()
+        elapsed = now - _last_request_time
+        if elapsed < MIN_INTERVAL:
+            await asyncio.sleep(MIN_INTERVAL - elapsed)
+        _last_request_time = time.time()
 
 
 async def _call_claude(**kwargs):
@@ -226,9 +207,7 @@ async def process_message(text: str, username: str, role: str, topic: str,
     context = {"username": username, "role": role, "topic": topic}
     system_prompt = get_system_prompt(context)
 
-    # 3. Выбираем модель по роли
-    # Sonnet только для владельца — остальным хватает Haiku для function calling
-    model = MODEL_AGENT if role == "owner" else MODEL_CHEAP
+    model = MODEL
 
     # 4. Получаем историю и добавляем новое сообщение
     history = _get_history(caller_id)
@@ -237,27 +216,37 @@ async def process_message(text: str, username: str, role: str, topic: str,
 
     messages = [msg.copy() for msg in history]
 
-    # 5. Инструменты + prompt caching
-    raw_tools = get_tools_for_role(role)
-    cached_tools = _build_tools_with_cache(raw_tools)
-    cached_system = _build_system_with_cache(system_prompt)
+    # 5. Инструменты — подключаем релевантные по ключевым словам
+    #    Если есть история (продолжение диалога) — ищем ключевые слова
+    #    и в текущем сообщении, и в последних сообщениях из истории
+    tools = match_tools(text, role)
+    if not tools and len(history) > 1:
+        recent_texts = " ".join(
+            msg["content"] for msg in history[-4:]
+            if msg.get("role") == "user" and isinstance(msg.get("content"), str)
+        )
+        tools = match_tools(recent_texts, role)
 
     try:
         kwargs = {
             "model": model,
-            "system": cached_system,
+            "system": system_prompt,
             "messages": messages,
-            "max_tokens": 1024,        # Снижено с 2048 — ответы бота короткие
-            "tools": cached_tools,
-            "tool_choice": {"type": "auto"},
+            "max_tokens": MAX_TOKENS,
         }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = {"type": "auto"}
 
         response = await _call_claude(**kwargs)
 
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-        max_tool_rounds = 3
+        max_tool_rounds = MAX_TOOL_ROUNDS
         round_num = 0
+        # Инструменты, которые сами отправляют ответ пользователю (черновик и т.д.)
+        _SILENT_TOOLS = {"create_task"}
+        called_silent_tool = False
 
         while tool_use_blocks and round_num < max_tool_rounds:
             round_num += 1
@@ -271,7 +260,10 @@ async def process_message(text: str, username: str, role: str, topic: str,
                 func_args = json.dumps(block.input, ensure_ascii=False)
                 print(f"  🔧 Вызов: {func_name}({func_args})")
 
-                result = await execute_tool(func_name, func_args, caller_id)
+                if func_name in _SILENT_TOOLS:
+                    called_silent_tool = True
+
+                result = await execute_tool(func_name, func_args, caller_id, topic)
                 print(f"  📦 Результат: {result[:200]}...")
 
                 tool_results.append({
@@ -284,13 +276,21 @@ async def process_message(text: str, username: str, role: str, topic: str,
 
             response = await _call_claude(
                 model=model,
-                system=cached_system,
+                system=system_prompt,
                 messages=messages,
-                max_tokens=1024,
-                tools=cached_tools,
+                max_tokens=MAX_TOKENS,
+                tools=tools,
                 tool_choice={"type": "auto"},
             )
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
+
+        # Если инструмент сам отправил ответ — не дублируем
+        if called_silent_tool:
+            text_blocks = [b for b in response.content if b.type == "text"]
+            reply = text_blocks[0].text if text_blocks else ""
+            history.append({"role": "assistant", "content": reply or "Готово"})
+            _trim_history(history, role)
+            return None
 
         text_blocks = [b for b in response.content if b.type == "text"]
         reply = text_blocks[0].text if text_blocks else "Готово ✅"

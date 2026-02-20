@@ -3,7 +3,7 @@
 """
 import json
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL_CHEAP
+from config import ANTHROPIC_API_KEY, MODEL, DUPLICATE_CHECK_LIMIT
 from models.bug import get_recent_bugs
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -16,15 +16,21 @@ async def check_duplicate(title: str, description: str) -> dict:
     Возвращает:
         {"is_duplicate": bool, "similar_bug_id": int|null, "explanation": str}
     """
-    existing = await get_recent_bugs(limit=50)
+    existing = await get_recent_bugs(limit=DUPLICATE_CHECK_LIMIT)
 
     if not existing:
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": "Нет существующих багов для сравнения"}
 
+    # Предфильтрация: сначала баги с тем же скриптом, потом остальные
+    title_lower = title.lower().strip()
+    candidates = [b for b in existing if title_lower in (b.get("title") or "").lower()]
+    if not candidates:
+        candidates = existing
+
     # Формируем список существующих багов с описаниями
     bugs_text = "\n".join(
         f"- ID #{b['id']}: {b['title']} | Описание: {b.get('description', '')} ({b['type']})"
-        for b in existing
+        for b in candidates
     )
 
     prompt = f"""Ты — система проверки дублей багов. Сравни новый баг с существующими.
@@ -49,7 +55,7 @@ async def check_duplicate(title: str, description: str) -> dict:
 
     try:
         response = await client.messages.create(
-            model=MODEL_CHEAP,
+            model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
         )

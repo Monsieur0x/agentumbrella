@@ -3,13 +3,25 @@
 Все секреты берутся из .env файла.
 """
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _int_env(name: str, default: int = 0) -> int:
+    """Читает int из .env с понятной ошибкой при невалидном значении."""
+    raw = os.getenv(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"❌ {name}={raw!r} — должно быть целым числом")
+        sys.exit(1)
+
+
 # === Telegram ===
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_TELEGRAM_ID = int(os.getenv("OWNER_TELEGRAM_ID", "0"))
+OWNER_TELEGRAM_ID = _int_env("OWNER_TELEGRAM_ID")
 
 # === Anthropic ===
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -22,18 +34,18 @@ else:
 WEEEK_API_KEY = os.getenv("WEEEK_API_KEY", "")
 
 # === ID группы ===
-GROUP_ID = int(os.getenv("GROUP_ID", "0"))
+GROUP_ID = _int_env("GROUP_ID")
 
 # === ID топиков (thread_id) ===
 # Запустите с DEBUG_TOPICS=1 чтобы узнать ID каждого топика
 TOPIC_IDS = {
-    "general": int(os.getenv("TOPIC_GENERAL", "1")),
-    "tasks": int(os.getenv("TOPIC_TASKS", "0")),
-    "bugs": int(os.getenv("TOPIC_BUGS", "0")),
-    "crashes": int(os.getenv("TOPIC_CRASHES", "0")),
-    "reports": int(os.getenv("TOPIC_REPORTS", "0")),
-    "top": int(os.getenv("TOPIC_TOP", "0")),
-    "logs": int(os.getenv("TOPIC_LOGS", "0")),
+    "general": _int_env("TOPIC_GENERAL", 1),
+    "tasks": _int_env("TOPIC_TASKS"),
+    "bugs": _int_env("TOPIC_BUGS"),
+    "crashes": _int_env("TOPIC_CRASHES"),
+    "top": _int_env("TOPIC_TOP"),
+    "logs": _int_env("TOPIC_LOGS"),
+    "logins": _int_env("TOPIC_LOGINS"),
 }
 
 # Обратный маппинг: thread_id → название топика
@@ -43,13 +55,24 @@ TOPIC_NAMES = {v: k for k, v in TOPIC_IDS.items() if v != 0}
 POINTS = {
     "bug_accepted": 3,      # Принятый баг
     "crash_accepted": 4,    # Принятый краш
-    "game_played": 1,       # За каждую игру (из скриншота)
+    "game_played": 1,       # За каждую игру
 }
 
 # === Модели Anthropic ===
-MODEL_AGENT = os.getenv("MODEL_AGENT", "claude-sonnet-4-5-20250929")
-MODEL_CHEAP = os.getenv("MODEL_CHEAP", "claude-haiku-4-5-20251001")
-MODEL_VISION = os.getenv("MODEL_VISION", "claude-haiku-4-5-20251001")
+# Единая модель для всех задач — Haiku (дешёвая и быстрая)
+MODEL = os.getenv("MODEL", "claude-haiku-4-5-20251001")
 
 # === Режим отладки ===
 DEBUG_TOPICS = os.getenv("DEBUG_TOPICS", "0") == "1"
+
+# === Лимиты агента ===
+MAX_TOKENS = _int_env("MAX_TOKENS", 1024)
+MAX_TOOL_ROUNDS = _int_env("MAX_TOOL_ROUNDS", 3)
+MAX_HISTORY = {
+    "tester": 2,
+    "admin": 2,
+    "owner": 3,
+}
+MAX_USERS_CACHE = 200
+DUPLICATE_CHECK_LIMIT = 50
+SEARCH_BUGS_LIMIT = 20

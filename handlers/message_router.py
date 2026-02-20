@@ -93,16 +93,11 @@ async def handle_group_message(message: Message, bot: Bot):
     user = message.from_user
     topic = get_topic_name(message)
 
-    # === Режим отладки: показываем ID топиков ===
+    # === Режим отладки: показываем ID топика ===
     if DEBUG_TOPICS:
         await message.reply(
-            f"🔍 Debug:\n"
-            f"chat_id: <code>{message.chat.id}</code>\n"
-            f"thread_id: <code>{message.message_thread_id}</code>\n"
-            f"topic: {topic}\n"
-            f"user_id: <code>{user.id}</code>\n"
-            f"username: @{user.username}\n\n"
-            f"👆 Скопируй chat_id в GROUP_ID, а thread_id — в нужный TOPIC_*"
+            f"thread_id: <code>{message.message_thread_id}</code>",
+            parse_mode="HTML",
         )
         return
 
@@ -120,42 +115,48 @@ async def handle_group_message(message: Message, bot: Bot):
     role = await get_role(user.id)
     bot_info = await _get_bot_info(bot)
 
-    # === Полностью игнорируем топик General ===
-    if topic == "general":
+    # === Полностью игнорируем топики General и Логины ===
+    if topic in ("general", "logins"):
         return
 
     # === Роутинг по топикам ===
 
     raw_text = (message.text or message.caption or "").lower()
-    has_hashtag_bug = "#баг" in raw_text or "#краш" in raw_text
-    has_hashtag_report = "#отчёт" in raw_text or "#отчет" in raw_text
+    has_hashtag_bug = "#баг" in raw_text
     mentioned = is_bot_mentioned(message, bot_info)
 
-    # Топик «Баги» или «Краши» → только по хештегу #баг / #краш
-    if topic in ("bugs", "crashes"):
+    # Топик «Баги» → только по хештегу #баг или файл для ожидающего бага
+    if topic == "bugs":
+        from handlers.bug_handler import handle_bug_report, handle_file_followup
+        # Проверяем: может тестер присылает файл для бага в статусе waiting_file
+        file_present = bool(message.document or message.video or message.photo or message.video_note)
+        if file_present:
+            from database import get_db
+            db = await get_db()
+            cursor = await db.execute(
+                "SELECT id FROM bugs WHERE tester_id = ? AND status = 'waiting_file' ORDER BY id DESC LIMIT 1",
+                (user.id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await handle_file_followup(message, dict(row)["id"])
+                return
         if has_hashtag_bug:
-            from handlers.bug_handler import handle_bug_report
-            await handle_bug_report(message, topic, role)
+            await handle_bug_report(message)
             return
-        if mentioned:
-            pass  # Пропускаем в мозг агента ниже
-        else:
-            return  # Обычное сообщение — игнор
+        # Без #баг и без ожидающего файла — игнорируем
+        return
 
-    # Топик «Отчёты» → только по хештегу #отчёт
-    if topic == "reports":
-        if has_hashtag_report and message.photo:
-            await message.reply("📸 Скриншот получен! (Обработка скриншотов будет доступна позже)")
-            return
-        if mentioned:
-            pass  # Пропускаем в мозг агента
-        else:
-            return  # Игнор
-
-    # В остальных топиках — отвечаем только если обращаются к боту
-    if topic in ("tasks", "top", "logs"):
-        if not mentioned:
-            return
+    # Во всех топиках (кроме bugs) — отвечаем только если обращаются к боту
+    # Админ/владелец может реплаить на сообщение тестера без @бот
+    admin_reply = (
+        role in ("admin", "owner")
+        and message.reply_to_message
+        and message.reply_to_message.from_user
+        and not message.reply_to_message.from_user.is_bot
+    )
+    if not mentioned and not admin_reply:
+        return
 
     # === Отправляем в мозг агента ===
     if not message.text:
@@ -169,10 +170,17 @@ async def handle_group_message(message: Message, bot: Bot):
                 "Тебе доступны:\n"
                 "• <b>моя статистика</b>\n"
                 "• <b>рейтинг</b>\n\n"
-                "Багрепорты оформляй с хештегом <b>#баг</b> или <b>#краш</b>.",
+                "Багрепорты отправляй в топик <b>Баги</b> с хештегом <b>#баг</b>.",
                 parse_mode="HTML"
             )
         return
+
+    # === Контекст реплая: если админ отвечает на сообщение тестера ===
+    text_to_send = message.text
+    reply_user = message.reply_to_message.from_user if message.reply_to_message else None
+    if reply_user and not reply_user.is_bot and reply_user.id != user.id:
+        reply_username = reply_user.username or reply_user.full_name or str(reply_user.id)
+        text_to_send = f"[ответ на сообщение @{reply_username}] {message.text}"
 
     # Показываем «печатает...»
     await bot.send_chat_action(message.chat.id, "typing")
@@ -181,13 +189,14 @@ async def handle_group_message(message: Message, bot: Bot):
 
     try:
         response = await process_message(
-            text=message.text,
+            text=text_to_send,
             username=user.username or user.full_name or str(user.id),
             role=role,
             topic=topic,
             caller_id=user.id,
         )
-        await _safe_reply(message, response, parse_mode="HTML")
+        if response:
+            await _safe_reply(message, response, parse_mode="HTML")
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         await message.reply(
@@ -197,31 +206,29 @@ async def handle_group_message(message: Message, bot: Bot):
 
 
 async def _handle_draft_task_edit(message: Message, user) -> bool:
-    """Если у админа/владельца есть черновик задания, воспринимаем текст как редактирование."""
+    """Если у админа/владельца есть черновик задания, воспринимаем текст как редактирование.
+    Работает только в ЛС — в группе редактирование черновиков не поддерживается."""
     from database import get_db
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     import html
 
     db = await get_db()
-    try:
-        cursor = await db.execute(
-            "SELECT id FROM tasks WHERE admin_id = ? AND status = 'draft' ORDER BY id DESC LIMIT 1",
-            (user.id,)
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return False
+    cursor = await db.execute(
+        "SELECT id FROM tasks WHERE admin_id = ? AND status = 'draft' ORDER BY id DESC LIMIT 1",
+        (user.id,)
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return False
 
-        task_id = row[0]
-        new_text = message.text
+    task_id = row[0]
+    new_text = message.text
 
-        await db.execute(
-            "UPDATE tasks SET full_text = ? WHERE id = ?",
-            (new_text, task_id)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute(
+        "UPDATE tasks SET full_text = ? WHERE id = ?",
+        (new_text, task_id)
+    )
+    await db.commit()
 
     safe_text = html.escape(new_text)
     preview_text = (
@@ -304,7 +311,7 @@ async def handle_private_message(message: Message, bot: Bot):
                 "🚫 В личных сообщениях тебе доступны только:\n\n"
                 "• <b>моя статистика</b> — твои баллы и показатели\n"
                 "• <b>рейтинг</b> — таблица тестеров\n\n"
-                "Багрепорты отправляй в топик <b>Баги</b> или <b>Краши</b>.",
+                "Багрепорты отправляй в топик <b>Баги</b> с хештегом <b>#баг</b>.",
                 parse_mode="HTML"
             )
         return
@@ -325,7 +332,8 @@ async def handle_private_message(message: Message, bot: Bot):
             topic="private",
             caller_id=user.id,
         )
-        await _safe_reply(message, response, parse_mode="HTML")
+        if response:
+            await _safe_reply(message, response, parse_mode="HTML")
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         await message.answer(
