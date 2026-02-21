@@ -8,7 +8,7 @@ import asyncio
 from collections import OrderedDict
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
-from agent.system_prompt import get_system_prompt
+from agent.system_prompt import get_system_prompt, get_chat_prompt
 from agent.tools import get_tools_for_role
 from agent.tool_executor import execute_tool
 
@@ -112,66 +112,9 @@ INSTANT_REPLIES = {
 }
 
 
-_SOUL_REPLIES = {
-    "привет": "Привет, братан! 👋 Го фармить баги? 🐛",
-    "здравствуй": "Здарова! Как фарм? Чем помочь? 😄",
-    "здравствуйте": "Здравствуйте! Надеюсь, сегодня крит удача на нашей стороне 🎲",
-    "хай": "Хай! Готов к ганку на баги? 🎯",
-    "hello": "Hello! Ready to farm some bugs? 🐛",
-    "hi": "Hi! glhf 🎮",
-    "пока": "Пока! gg wp 🤝",
-    "до свидания": "До встречи! Не забудь байбэк купить 💰",
-    "спасибо": "Да не за что, тащи дальше! 💪",
-    "благодарю": "Всегда рад помочь тиммейту! 🤝",
-    "ок": "Принято! 👌",
-    "окей": "Рогер! 🫡",
-    "круто": "Как рампага! 🔥🔥🔥",
-    "отлично": "Ultra Kill! 🔥",
-    "супер": "RAMPAGE! 🔥🔥🔥🔥🔥",
-    "класс": "GG! 🏆",
-    "как дела": "Фармлю баги, стакаю репорты. А ты как? 😄",
-    "что нового": "Всё по плану, команда в бою! Чем помочь? 🎮",
-    "кто ты": "Я Umbrella Bot — тимлид по багам, саппорт по жизни! 🤖🎮 Координирую тестирование чита для Dota 2.",
-}
-
-_TOXIC_REPLIES = {
-    "привет": "О, ещё один. Ну давай, чё надо? 😒",
-    "здравствуй": "Здравствуй-здравствуй. Надеюсь ты хоть что-то полезное скажешь.",
-    "здравствуйте": "Ага, приветствую. Давай к делу, мид пушат.",
-    "хай": "Хай. Ну? 🙄",
-    "hello": "Yeah, what? 😒",
-    "hi": "...",
-    "пока": "gg ez 👋",
-    "до свидания": "ff, отключайся уже 👋",
-    "спасибо": "Ну хоть кто-то вежливый... ладно, не за что 🙄",
-    "благодарю": "Wow, манеры. Редкость тут. Пожалуйста.",
-    "ок": "👍 (единственный нормальный ответ за день)",
-    "окей": "Ну ок 🙄",
-    "круто": "Ну такое... но ладно 😏",
-    "отлично": "Отлично? Ну, для вашего уровня — может быть 😏",
-    "супер": "ez 😎",
-    "класс": "diff 😏",
-    "как дела": "Работаю за всю команду, как обычно. Что надо?",
-    "что нового": "Ничего нового — всё тот же хаос. Давай к делу.",
-    "кто ты": "Я Umbrella Bot. Тащу ваше тестирование, пока вы в лесу фармите. 🤖 gg ez.",
-}
-
-_PERSONALITY_REPLIES = {
-    "soul": _SOUL_REPLIES,
-    "toxic": _TOXIC_REPLIES,
-}
-
-
 def get_instant_reply(text: str) -> str | None:
-    """Мгновенный ответ без вызова API, с учётом личности бота."""
-    import config
+    """Мгновенный ответ без вызова API."""
     clean = re.sub(r'[!?.,)]+$', '', text.lower().strip())
-
-    # Оверрайды для текущей личности
-    overrides = _PERSONALITY_REPLIES.get(config.BOT_PERSONALITY)
-    if overrides and clean in overrides:
-        return overrides[clean]
-
     return INSTANT_REPLIES.get(clean)
 
 
@@ -374,4 +317,43 @@ async def process_message(text: str, username: str, role: str, topic: str,
         if history and history[-1].get("role") == "user":
             history.pop()
         print(f"❌ Ошибка brain: {e}")
+        return f"⚠️ Ошибка: {str(e)[:200]}"
+
+
+async def process_chat_message(text: str, caller_id: int) -> str:
+    """Свободный чат без инструментов — просто болтовня."""
+    from config import CHAT_MODEL
+
+    system_prompt = get_chat_prompt()
+
+    history = _get_history(caller_id)
+    history.append({"role": "user", "content": text})
+    _trim_history(history, "owner")  # даём побольше истории для контекста
+
+    messages = [msg.copy() for msg in history]
+
+    try:
+        response = await _call_claude(
+            model=CHAT_MODEL,
+            system=system_prompt,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+        )
+
+        text_blocks = [b for b in response.content if b.type == "text"]
+        reply = text_blocks[0].text if text_blocks else "чё"
+
+        history.append({"role": "assistant", "content": reply})
+        _trim_history(history, "owner")
+
+        return reply
+
+    except anthropic.RateLimitError:
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        return "⚠️ Claude API: превышен лимит запросов. Подождите немного."
+    except Exception as e:
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        print(f"❌ Ошибка chat brain: {e}")
         return f"⚠️ Ошибка: {str(e)[:200]}"

@@ -6,10 +6,10 @@
 import time
 from aiogram import Router, F, Bot
 from aiogram.types import Message
-from config import GROUP_ID, TOPIC_NAMES, TOPIC_IDS, DEBUG_TOPICS, BOT_MODE, OBSERVE_REPLY
+from config import GROUP_ID, TOPIC_NAMES, DEBUG_TOPICS, OBSERVE_REPLY
 from models.admin import is_admin, is_owner
 from models.tester import get_or_create_tester, get_tester_by_id
-from agent.brain import process_message
+from agent.brain import process_message, process_chat_message
 from services.rating_service import get_rating, format_rating_message
 from utils.logger import log_info
 
@@ -122,6 +122,28 @@ async def handle_group_message(message: Message, bot: Bot):
             await message.reply(OBSERVE_REPLY)
         return
 
+    # === Чат-режим: свободная болтовня без функций координатора ===
+    if config.BOT_MODE == "chat":
+        bot_info = await _get_bot_info(bot)
+        if not is_bot_mentioned(message, bot_info):
+            return
+        if await _handle_mode_toggle(message, user):
+            return
+        if not message.text:
+            return
+        try:
+            await bot.send_chat_action(message.chat.id, "typing")
+        except Exception:
+            pass
+        try:
+            response = await process_chat_message(text=message.text, caller_id=user.id)
+            if response:
+                await _safe_reply(message, response, parse_mode="HTML")
+        except Exception as e:
+            print(f"❌ Ошибка chat: {e}")
+            await message.reply(f"⚠️ Ошибка: <code>{str(e)[:300]}</code>", parse_mode="HTML")
+        return
+
     # === Авторегистрация ===
     await get_or_create_tester(
         telegram_id=user.id,
@@ -187,10 +209,8 @@ async def handle_group_message(message: Message, bot: Bot):
     if not message.text:
         return
 
-    # === Команды владельца: переключение режима / личности / вкл/выкл Weeek ===
+    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
-        return
-    if await _handle_personality_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):
         return
@@ -296,12 +316,7 @@ _WEEEK_ON_KEYWORDS = ("включи вик", "запусти вик", "стар�
 
 _MODE_OBSERVE_KEYWORDS = ("режим наблюдени", "включи наблюдени", "режим observe", "переключи на наблюдени")
 _MODE_ACTIVE_KEYWORDS = ("рабочий режим", "включи рабочий", "режим актив", "переключи на рабочий")
-
-_PERSONALITY_DEFAULT_KEYWORDS = ("обычный режим", "обычная личность", "режим обычный", "личность обычная", "стандартный режим")
-_PERSONALITY_SOUL_KEYWORDS = ("режим душа", "душа компании", "личность душа", "режим весёлый")
-_PERSONALITY_TOXIC_KEYWORDS = ("токсик режим", "режим токсик", "личность токсик", "токсичный режим")
-_PERSONALITY_CUSTOM_PREFIXES = ("кастом режим:", "кастомный режим:", "личность кастом:", "своя личность:")
-_PERSONALITY_COMMAND = ("личность", "личности", "personality")
+_MODE_CHAT_KEYWORDS = ("режим чат", "включи чат", "чат режим", "переключи на чат", "режим болтовни")
 
 
 async def _handle_mode_toggle(message: Message, user) -> bool:
@@ -324,66 +339,13 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
         await message.reply("✅ Режим переключён: <b>рабочий</b>. Бот отвечает на все сообщения.", parse_mode="HTML")
         return True
 
-    return False
-
-
-async def _handle_personality_toggle(message: Message, user) -> bool:
-    """Обрабатывает команды владельца для переключения личности бота. Возвращает True если обработано."""
-    if not message.text:
-        return False
-    if not await is_owner(user.id):
-        return False
-
-    import config
-    text = message.text.strip()
-    text_lower = text.lower()
-
-    # Команда "личность" → показать инлайн-кнопки
-    clean = text_lower.rstrip("!?., ")
-    if clean in _PERSONALITY_COMMAND:
-        from handlers.callback_handler import build_personality_keyboard
-        keyboard = build_personality_keyboard()
-        labels = {"default": "🤖 Обычный", "soul": "🎉 Душа компании", "toxic": "💀 Токсик", "custom": "✏️ Кастом"}
-        current = labels.get(config.BOT_PERSONALITY, config.BOT_PERSONALITY)
-        await message.reply(
-            f"🎭 <b>Личность бота</b>\n\nТекущая: <b>{current}</b>\n\nВыберите новую:",
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-        return True
-
-    # Кастомная личность: "кастом режим: <текст>"
-    for prefix in _PERSONALITY_CUSTOM_PREFIXES:
-        if text_lower.startswith(prefix):
-            custom_text = text[len(prefix):].strip()
-            if not custom_text:
-                await message.reply("⚠️ Укажите текст после «кастом режим:»", parse_mode="HTML")
-                return True
-            config.BOT_PERSONALITY = "custom"
-            config.CUSTOM_PERSONALITY_PROMPT = custom_text
-            await message.reply(
-                f"✏️ Личность переключена: <b>Кастом</b>\n\n<i>{custom_text[:200]}</i>",
-                parse_mode="HTML",
-            )
-            return True
-
-    # Переключение по ключевым словам
-    if any(kw in text_lower for kw in _PERSONALITY_DEFAULT_KEYWORDS):
-        config.BOT_PERSONALITY = "default"
-        await message.reply("🤖 Личность переключена: <b>Обычный</b> — строго по делу.", parse_mode="HTML")
-        return True
-
-    if any(kw in text_lower for kw in _PERSONALITY_SOUL_KEYWORDS):
-        config.BOT_PERSONALITY = "soul"
-        await message.reply("🎉 Личность переключена: <b>Душа компании</b> — шутки, сленг, веселье!", parse_mode="HTML")
-        return True
-
-    if any(kw in text_lower for kw in _PERSONALITY_TOXIC_KEYWORDS):
-        config.BOT_PERSONALITY = "toxic"
-        await message.reply("💀 Личность переключена: <b>Токсик</b> — gg ez, репорт мид.", parse_mode="HTML")
+    if any(kw in text for kw in _MODE_CHAT_KEYWORDS):
+        config.BOT_MODE = "chat"
+        await message.reply("💬 Режим переключён: <b>чат</b>. Свободная болтовня, функции координатора отключены.", parse_mode="HTML")
         return True
 
     return False
+
 
 
 async def _handle_weeek_toggle(message: Message, user) -> bool:
@@ -525,6 +487,23 @@ async def handle_private_message(message: Message, bot: Bot):
         await message.answer(OBSERVE_REPLY)
         return
 
+    # === Чат-режим: свободная болтовня без функций координатора ===
+    if config.BOT_MODE == "chat":
+        if await _handle_mode_toggle(message, user):
+            return
+        try:
+            await bot.send_chat_action(message.chat.id, "typing")
+        except Exception:
+            pass
+        try:
+            response = await process_chat_message(text=message.text, caller_id=user.id)
+            if response:
+                await _safe_reply(message, response, parse_mode="HTML")
+        except Exception as e:
+            print(f"❌ Ошибка chat: {e}")
+            await message.answer(f"⚠️ Ошибка: <code>{str(e)[:300]}</code>", parse_mode="HTML")
+        return
+
     # Авторегистрация
     await get_or_create_tester(
         telegram_id=user.id,
@@ -547,10 +526,8 @@ async def handle_private_message(message: Message, bot: Bot):
             )
         return
 
-    # === Команды владельца: переключение режима / личности / вкл/выкл Weeek ===
+    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
-        return
-    if await _handle_personality_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):
         return

@@ -35,7 +35,7 @@ def _safe_html_text(callback: CallbackQuery) -> str:
 #  Выбор режима работы при запуске
 # ─────────────────────────────────────────────
 
-@router.callback_query(F.data.in_({"mode_active", "mode_observe"}))
+@router.callback_query(F.data.in_({"mode_active", "mode_observe", "mode_chat"}))
 async def handle_mode_select(callback: CallbackQuery):
     """Владелец выбирает режим работы бота (при запуске или в рантайме)."""
     if not await is_owner(callback.from_user.id):
@@ -44,16 +44,17 @@ async def handle_mode_select(callback: CallbackQuery):
 
     import config
 
-    mode = callback.data  # "mode_active" или "mode_observe"
-    config.BOT_MODE = mode.replace("mode_", "")  # "active" или "observe"
+    mode = callback.data  # "mode_active", "mode_observe" или "mode_chat"
+    config.BOT_MODE = mode.replace("mode_", "")  # "active", "observe" или "chat"
 
-    labels = {"active": "✅ Рабочий режим", "observe": "👁 Режим наблюдения"}
+    labels = {"active": "✅ Рабочий режим", "observe": "👁 Режим наблюдения", "chat": "💬 Чат-режим"}
     label = labels.get(config.BOT_MODE, config.BOT_MODE)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Рабочий режим", callback_data="mode_active"),
-            InlineKeyboardButton(text="👁 Режим наблюдения", callback_data="mode_observe"),
+            InlineKeyboardButton(text="👁 Наблюдение", callback_data="mode_observe"),
+            InlineKeyboardButton(text="💬 Чат", callback_data="mode_chat"),
         ]
     ])
     await callback.message.edit_text(
@@ -63,70 +64,6 @@ async def handle_mode_select(callback: CallbackQuery):
         reply_markup=keyboard,
     )
     await callback.answer(f"Выбран: {label}")
-
-
-# ─────────────────────────────────────────────
-#  Выбор личности бота
-# ─────────────────────────────────────────────
-
-_PERSONALITY_LABELS = {
-    "default": "🤖 Обычный",
-    "soul": "🎉 Душа компании",
-    "toxic": "💀 Токсик",
-    "custom": "✏️ Кастом",
-}
-
-
-def build_personality_keyboard():
-    """Создаёт inline-клавиатуру выбора личности."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🤖 Обычный", callback_data="personality_default"),
-            InlineKeyboardButton(text="🎉 Душа компании", callback_data="personality_soul"),
-        ],
-        [
-            InlineKeyboardButton(text="💀 Токсик", callback_data="personality_toxic"),
-            InlineKeyboardButton(text="✏️ Кастом", callback_data="personality_custom"),
-        ],
-    ])
-
-
-@router.callback_query(F.data.startswith("personality_"))
-async def handle_personality_select(callback: CallbackQuery):
-    """Владелец выбирает личность бота."""
-    if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может выбирать личность", show_alert=True)
-        return
-
-    import config
-
-    personality = callback.data.replace("personality_", "")
-
-    if personality == "custom":
-        await callback.message.edit_text(
-            "✏️ <b>Кастомная личность</b>\n\n"
-            "Отправьте текст описания личности в чат.\n"
-            "Например: «кастом режим: Говори как пират из Dota 2, вставляй arrr и yo ho ho»",
-            parse_mode="HTML",
-            reply_markup=None,
-        )
-        await callback.answer("Отправьте текст личности в чат")
-        return
-
-    if personality not in _PERSONALITY_LABELS:
-        await callback.answer("Неизвестная личность", show_alert=True)
-        return
-
-    config.BOT_PERSONALITY = personality
-    label = _PERSONALITY_LABELS[personality]
-
-    keyboard = build_personality_keyboard()
-    await callback.message.edit_text(
-        f"🎭 <b>Личность бота</b>\n\nТекущая: <b>{label}</b>",
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
-    await callback.answer(f"Выбрано: {label}")
 
 
 async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:

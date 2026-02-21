@@ -76,24 +76,16 @@ async def main():
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="✅ Рабочий режим", callback_data="mode_active"),
-                InlineKeyboardButton(text="👁 Режим наблюдения", callback_data="mode_observe"),
-            ],
-            [
-                InlineKeyboardButton(text="🤖 Обычный", callback_data="personality_default"),
-                InlineKeyboardButton(text="🎉 Душа", callback_data="personality_soul"),
-            ],
-            [
-                InlineKeyboardButton(text="💀 Токсик", callback_data="personality_toxic"),
-                InlineKeyboardButton(text="✏️ Кастом", callback_data="personality_custom"),
+                InlineKeyboardButton(text="👁 Наблюдение", callback_data="mode_observe"),
+                InlineKeyboardButton(text="💬 Чат", callback_data="mode_chat"),
             ],
         ])
         await bot.send_message(
             OWNER_TELEGRAM_ID,
             "🟢 <b>Umbrella Bot запущен!</b>\n\n"
             f"Бот: @{bot_info.username}\n"
-            f"Режим: <b>✅ Рабочий</b>\n"
-            f"Личность: <b>🤖 Обычный</b>\n\n"
-            "Переключить режим и личность можно кнопками ниже или командой в чате:",
+            f"Режим: <b>✅ Рабочий</b>\n\n"
+            "Переключить режим можно кнопками ниже или командой в чате:",
             reply_markup=keyboard,
         )
     except Exception as e:

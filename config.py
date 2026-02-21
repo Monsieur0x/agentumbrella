@@ -76,13 +76,12 @@ DUPLICATE_CHECK_LIMIT = 50
 SEARCH_BUGS_LIMIT = 20
 
 # === Режим работы бота (выбирается владельцем при запуске) ===
-BOT_MODE = "active"  # "active" | "observe"
+BOT_MODE = "active"  # "active" | "observe" | "chat"
+
+# === Модель для свободного чата (режим chat) ===
+CHAT_MODEL = os.getenv("CHAT_MODEL", MODEL)
 
 OBSERVE_REPLY = "Пока что я только наблюдаю за вами."
-
-# === Личность бота (стиль общения, не влияет на логику) ===
-BOT_PERSONALITY = "default"  # "default" | "soul" | "toxic" | "custom"
-CUSTOM_PERSONALITY_PROMPT = ""  # Текст кастомного промпта (для режима "custom")
 
 # === Weeek интеграция (переключается владельцем в рантайме) ===
 WEEEK_ENABLED = True
