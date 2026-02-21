@@ -73,16 +73,15 @@ async def update_tester_points(telegram_id: int, delta: int) -> int:
     return row["total_points"] if row else 0
 
 
-async def update_tester_stats(telegram_id: int, bugs: int = 0, crashes: int = 0, games: int = 0):
-    """Увеличивает счётчики багов/крашей/игр."""
+async def update_tester_stats(telegram_id: int, bugs: int = 0, games: int = 0):
+    """Увеличивает счётчики багов/игр."""
     db = await get_db()
     await db.execute(
         """UPDATE testers SET
             total_bugs = total_bugs + ?,
-            total_crashes = total_crashes + ?,
             total_games = total_games + ?
         WHERE telegram_id = ?""",
-        (bugs, crashes, games, telegram_id)
+        (bugs, games, telegram_id)
     )
     await db.commit()
 

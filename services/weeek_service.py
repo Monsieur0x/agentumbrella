@@ -45,6 +45,9 @@ async def _request(method: str, endpoint: str, data: dict = None) -> dict:
             json=data,
         )
         response.raise_for_status()
+        # DELETE может вернуть 204 без тела
+        if response.status_code == 204 or not response.content:
+            return {"success": True}
         return response.json()
     except httpx.HTTPStatusError as e:
         try:
@@ -117,14 +120,16 @@ async def upload_attachment(task_id: str, file_bytes: bytes, filename: str) -> d
         return {"error": "WEEEK_API_KEY не задан", "success": False}
 
     url = f"{BASE_URL}/tm/tasks/{task_id}/attachments"
-    client = _get_client()
 
     try:
-        response = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {WEEEK_API_KEY}"},
-            files={"files[]": (filename, file_bytes)},
-        )
+        # Отдельный клиент без Content-Type: application/json,
+        # иначе httpx не может выставить multipart/form-data boundary
+        async with httpx.AsyncClient(timeout=30.0) as upload_client:
+            response = await upload_client.post(
+                url,
+                headers={"Authorization": f"Bearer {WEEEK_API_KEY}"},
+                files={"files[]": (filename, file_bytes)},
+            )
         response.raise_for_status()
         return {"success": True}
     except httpx.HTTPStatusError as e:
@@ -135,7 +140,7 @@ async def upload_attachment(task_id: str, file_bytes: bytes, filename: str) -> d
         return {"success": False, "error": str(e)}
 
 
-async def create_task(title: str, description: str, bug_type: str = "bug",
+async def create_task(title: str, description: str,
                       tester_username: str = "", bug_id: int = 0,
                       board_column_id: int = None) -> dict:
     """
@@ -148,16 +153,16 @@ async def create_task(title: str, description: str, bug_type: str = "bug",
     full_desc = (
         f"{description}\n\n"
         f"---\n"
-        f"Тип: {'Краш' if bug_type == 'crash' else 'Баг'}\n"
+        f"Тип: Баг\n"
         f"Автор: @{tester_username}\n"
-        f"ID в боте: #{bug_id}"
+        f"Внутренний ID: {bug_id}"
     )
 
     task_data = {
-        "title": f"[{'CRASH' if bug_type == 'crash' else 'BUG'}] {title}",
+        "title": f"[BUG] {title}",
         "description": full_desc,
         "type": "action",
-        "priority": 2 if bug_type == "crash" else 1,
+        "priority": 1,
     }
 
     if WEEEK_PROJECT_ID:
@@ -181,29 +186,12 @@ async def create_task(title: str, description: str, bug_type: str = "bug",
 
 async def delete_task(task_id: str) -> dict:
     """DELETE /tm/tasks/{task_id} — удаляет задачу из Weeek."""
-    if not WEEEK_API_KEY:
-        return {"error": "WEEEK_API_KEY не задан", "success": False}
     if not task_id:
         return {"error": "task_id пустой", "success": False}
-
-    url = f"{BASE_URL}/tm/tasks/{task_id}"
-    client = _get_client()
-
-    try:
-        response = await client.delete(url)
-        response.raise_for_status()
-        # Weeek может вернуть 200 с JSON или 204 без тела
-        if response.status_code == 204 or not response.content:
-            return {"success": True, "task_id": task_id}
-        result = response.json()
-        return {"success": result.get("success", True), "task_id": task_id}
-    except httpx.HTTPStatusError as e:
-        error_text = e.response.text[:200] if e.response.text else str(e.response.status_code)
-        print(f"❌ Weeek DELETE task {task_id}: {e.response.status_code} — {error_text}")
-        return {"success": False, "error": f"HTTP {e.response.status_code}: {error_text}"}
-    except Exception as e:
-        print(f"❌ Weeek DELETE task ошибка: {e}")
-        return {"success": False, "error": str(e)}
+    result = await _request("DELETE", f"tm/tasks/{task_id}")
+    if "error" in result:
+        return {"success": False, "error": result["error"]}
+    return {"success": True, "task_id": task_id}
 
 
 async def setup_weeek() -> dict:
@@ -247,3 +235,11 @@ async def setup_weeek() -> dict:
         "project_id": WEEEK_PROJECT_ID,
         "boards_count": len(WEEEK_BOARDS),
     }
+
+
+async def close_client():
+    """Закрывает shared HTTP-клиент. Вызывать при остановке бота."""
+    global _http_client
+    if _http_client and not _http_client.is_closed:
+        await _http_client.aclose()
+        _http_client = None

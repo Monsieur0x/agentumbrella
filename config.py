@@ -42,7 +42,6 @@ TOPIC_IDS = {
     "general": _int_env("TOPIC_GENERAL", 1),
     "tasks": _int_env("TOPIC_TASKS"),
     "bugs": _int_env("TOPIC_BUGS"),
-    "crashes": _int_env("TOPIC_CRASHES"),
     "top": _int_env("TOPIC_TOP"),
     "logs": _int_env("TOPIC_LOGS"),
     "logins": _int_env("TOPIC_LOGINS"),
@@ -54,7 +53,6 @@ TOPIC_NAMES = {v: k for k, v in TOPIC_IDS.items() if v != 0}
 # === Баллы ===
 POINTS = {
     "bug_accepted": 3,      # Принятый баг
-    "crash_accepted": 4,    # Принятый краш
     "game_played": 1,       # За каждую игру
 }
 
@@ -81,6 +79,10 @@ SEARCH_BUGS_LIMIT = 20
 BOT_MODE = "active"  # "active" | "observe"
 
 OBSERVE_REPLY = "Пока что я только наблюдаю за вами."
+
+# === Личность бота (стиль общения, не влияет на логику) ===
+BOT_PERSONALITY = "default"  # "default" | "soul" | "toxic" | "custom"
+CUSTOM_PERSONALITY_PROMPT = ""  # Текст кастомного промпта (для режима "custom")
 
 # === Weeek интеграция (переключается владельцем в рантайме) ===
 WEEEK_ENABLED = True

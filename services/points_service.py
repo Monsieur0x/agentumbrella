@@ -41,10 +41,9 @@ async def award_points_bulk(usernames: list | str, amount: int, reason: str, adm
     usernames: список юзернеймов или "all" для всех.
     """
     if usernames == "all" or usernames == ["all"]:
-        from models.admin import get_all_admins
+        from models.admin import get_admin_ids
         testers = await get_all_testers()
-        admins = await get_all_admins()
-        admin_ids = {a["telegram_id"] for a in admins}
+        admin_ids = await get_admin_ids()
         targets = [t["username"] for t in testers if t["username"] and t["telegram_id"] not in admin_ids]
     else:
         if isinstance(usernames, str):

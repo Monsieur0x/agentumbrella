@@ -3,6 +3,7 @@
 
 Это главный обработчик всех входящих сообщений.
 """
+import time
 from aiogram import Router, F, Bot
 from aiogram.types import Message
 from config import GROUP_ID, TOPIC_NAMES, TOPIC_IDS, DEBUG_TOPICS, BOT_MODE, OBSERVE_REPLY
@@ -18,6 +19,11 @@ router = Router()
 _bot_info = None
 
 TG_MAX_MESSAGE_LENGTH = 4000  # Telegram лимит 4096, оставляем запас
+
+# Состояние ожидания ввода своего значения награды: telegram_id → (reward_type, timestamp)
+_pending_reward_input: dict[int, tuple[str, float]] = {}
+
+_REWARD_INPUT_TTL = 300  # 5 минут
 
 
 async def _get_bot_info(bot: Bot):
@@ -110,6 +116,9 @@ async def handle_group_message(message: Message, bot: Bot):
     if config.BOT_MODE == "observe":
         bot_info = await _get_bot_info(bot)
         if is_bot_mentioned(message, bot_info):
+            # Даём владельцу переключить режим даже в observe
+            if await _handle_mode_toggle(message, user):
+                return
             await message.reply(OBSERVE_REPLY)
         return
 
@@ -123,8 +132,8 @@ async def handle_group_message(message: Message, bot: Bot):
     role = await get_role(user.id)
     bot_info = await _get_bot_info(bot)
 
-    # === Полностью игнорируем топики General и Логины ===
-    if topic in ("general", "logins"):
+    # === Игнорируем топик Логины (чувствительные данные) ===
+    if topic == "logins":
         return
 
     # === Роутинг по топикам ===
@@ -133,14 +142,16 @@ async def handle_group_message(message: Message, bot: Bot):
     has_hashtag_bug = "#баг" in raw_text
     mentioned = is_bot_mentioned(message, bot_info)
 
-    # Топик «Баги» → только по хештегу #баг или файл для ожидающего бага
+    # Топик «Баги» → #баг, файл для ожидающего бага, или видео-ссылка
     if topic == "bugs":
-        from handlers.bug_handler import handle_bug_report, handle_file_followup
-        # Проверяем: может тестер присылает файл для бага в статусе waiting_file
+        from handlers.bug_handler import handle_bug_report, handle_file_followup, handle_video_followup
+        from database import get_db
+        db = await get_db()
+
         file_present = bool(message.document or message.video or message.photo or message.video_note)
+
+        # Проверяем: может тестер присылает файл для бага в статусе waiting_file
         if file_present:
-            from database import get_db
-            db = await get_db()
             cursor = await db.execute(
                 "SELECT id FROM bugs WHERE tester_id = ? AND status = 'waiting_file' ORDER BY id DESC LIMIT 1",
                 (user.id,),
@@ -149,29 +160,37 @@ async def handle_group_message(message: Message, bot: Bot):
             if row:
                 await handle_file_followup(message, dict(row)["id"])
                 return
+
+        # Проверяем: может тестер присылает видео-ссылку для бага в статусе waiting_video
+        if not has_hashtag_bug:
+            cursor = await db.execute(
+                "SELECT id FROM bugs WHERE tester_id = ? AND status = 'waiting_video' ORDER BY id DESC LIMIT 1",
+                (user.id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await handle_video_followup(message, dict(row)["id"])
+                return
+
         if has_hashtag_bug:
             await handle_bug_report(message)
             return
-        # Без #баг и без ожидающего файла — игнорируем
+        # Без #баг и без ожидающего — игнорируем
         return
 
     # Во всех топиках (кроме bugs) — отвечаем только если обращаются к боту
-    # Админ/владелец может реплаить на сообщение тестера без @бот
-    admin_reply = (
-        role in ("admin", "owner")
-        and message.reply_to_message
-        and message.reply_to_message.from_user
-        and not message.reply_to_message.from_user.is_bot
-    )
-    if not mentioned and not admin_reply:
+    # через @упоминание или реплай на сообщение бота
+    if not mentioned:
         return
 
     # === Отправляем в мозг агента ===
     if not message.text:
         return
 
-    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    # === Команды владельца: переключение режима / личности / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
+        return
+    if await _handle_personality_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):
         return
@@ -186,7 +205,7 @@ async def handle_group_message(message: Message, bot: Bot):
 
     # Тестеры в группе — только статистика и рейтинг, без Claude API
     if role == "tester":
-        handled = await _handle_tester_dm(message, user)
+        handled = await _handle_tester_commands(message, user)
         if not handled:
             await message.reply(
                 "Тебе доступны:\n"
@@ -205,7 +224,10 @@ async def handle_group_message(message: Message, bot: Bot):
         text_to_send = f"[ответ на сообщение @{reply_username}] {message.text}"
 
     # Показываем «печатает...»
-    await bot.send_chat_action(message.chat.id, "typing")
+    try:
+        await bot.send_chat_action(message.chat.id, "typing")
+    except Exception:
+        pass
 
     print(f"\n💬 [{role}] @{user.username} в [{topic}]: {message.text[:100]}")
 
@@ -275,6 +297,12 @@ _WEEEK_ON_KEYWORDS = ("включи вик", "запусти вик", "стар�
 _MODE_OBSERVE_KEYWORDS = ("режим наблюдени", "включи наблюдени", "режим observe", "переключи на наблюдени")
 _MODE_ACTIVE_KEYWORDS = ("рабочий режим", "включи рабочий", "режим актив", "переключи на рабочий")
 
+_PERSONALITY_DEFAULT_KEYWORDS = ("обычный режим", "обычная личность", "режим обычный", "личность обычная", "стандартный режим")
+_PERSONALITY_SOUL_KEYWORDS = ("режим душа", "душа компании", "личность душа", "режим весёлый")
+_PERSONALITY_TOXIC_KEYWORDS = ("токсик режим", "режим токсик", "личность токсик", "токсичный режим")
+_PERSONALITY_CUSTOM_PREFIXES = ("кастом режим:", "кастомный режим:", "личность кастом:", "своя личность:")
+_PERSONALITY_COMMAND = ("личность", "личности", "personality")
+
 
 async def _handle_mode_toggle(message: Message, user) -> bool:
     """Обрабатывает команды владельца для переключения режима бота. Возвращает True если обработано."""
@@ -294,6 +322,65 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
     if any(kw in text for kw in _MODE_ACTIVE_KEYWORDS):
         config.BOT_MODE = "active"
         await message.reply("✅ Режим переключён: <b>рабочий</b>. Бот отвечает на все сообщения.", parse_mode="HTML")
+        return True
+
+    return False
+
+
+async def _handle_personality_toggle(message: Message, user) -> bool:
+    """Обрабатывает команды владельца для переключения личности бота. Возвращает True если обработано."""
+    if not message.text:
+        return False
+    if not await is_owner(user.id):
+        return False
+
+    import config
+    text = message.text.strip()
+    text_lower = text.lower()
+
+    # Команда "личность" → показать инлайн-кнопки
+    clean = text_lower.rstrip("!?., ")
+    if clean in _PERSONALITY_COMMAND:
+        from handlers.callback_handler import build_personality_keyboard
+        keyboard = build_personality_keyboard()
+        labels = {"default": "🤖 Обычный", "soul": "🎉 Душа компании", "toxic": "💀 Токсик", "custom": "✏️ Кастом"}
+        current = labels.get(config.BOT_PERSONALITY, config.BOT_PERSONALITY)
+        await message.reply(
+            f"🎭 <b>Личность бота</b>\n\nТекущая: <b>{current}</b>\n\nВыберите новую:",
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+        return True
+
+    # Кастомная личность: "кастом режим: <текст>"
+    for prefix in _PERSONALITY_CUSTOM_PREFIXES:
+        if text_lower.startswith(prefix):
+            custom_text = text[len(prefix):].strip()
+            if not custom_text:
+                await message.reply("⚠️ Укажите текст после «кастом режим:»", parse_mode="HTML")
+                return True
+            config.BOT_PERSONALITY = "custom"
+            config.CUSTOM_PERSONALITY_PROMPT = custom_text
+            await message.reply(
+                f"✏️ Личность переключена: <b>Кастом</b>\n\n<i>{custom_text[:200]}</i>",
+                parse_mode="HTML",
+            )
+            return True
+
+    # Переключение по ключевым словам
+    if any(kw in text_lower for kw in _PERSONALITY_DEFAULT_KEYWORDS):
+        config.BOT_PERSONALITY = "default"
+        await message.reply("🤖 Личность переключена: <b>Обычный</b> — строго по делу.", parse_mode="HTML")
+        return True
+
+    if any(kw in text_lower for kw in _PERSONALITY_SOUL_KEYWORDS):
+        config.BOT_PERSONALITY = "soul"
+        await message.reply("🎉 Личность переключена: <b>Душа компании</b> — шутки, сленг, веселье!", parse_mode="HTML")
+        return True
+
+    if any(kw in text_lower for kw in _PERSONALITY_TOXIC_KEYWORDS):
+        config.BOT_PERSONALITY = "toxic"
+        await message.reply("💀 Личность переключена: <b>Токсик</b> — gg ez, репорт мид.", parse_mode="HTML")
         return True
 
     return False
@@ -326,9 +413,6 @@ _STATS_KEYWORDS = ("статистика", "стата", "мои баллы", "�
 _RATING_KEYWORDS = ("рейтинг", "топ", "таблица", "лидеры", "leaderboard")
 _REWARDS_KEYWORDS = ("настройка наград", "настроить награды", "настройки наград")
 
-# Состояние ожидания ввода своего значения награды: telegram_id → reward_type
-_pending_reward_input: dict[int, str] = {}
-
 
 async def _handle_rewards_settings(message: Message, user) -> bool:
     """Обрабатывает команду 'настройка наград' для админов/владельцев."""
@@ -343,24 +427,10 @@ async def _handle_rewards_settings(message: Message, user) -> bool:
         return False
 
     from models.settings import get_points_config
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from handlers.callback_handler import build_rewards_menu
 
     pts = await get_points_config()
-
-    msg_text = (
-        "⚙️ <b>Настройка наград</b>\n\n"
-        "Текущие значения:\n"
-        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
-        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
-        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
-        "Выберите категорию для изменения:"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
-        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
-        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
-    ])
+    msg_text, keyboard = build_rewards_menu(pts)
 
     await message.answer(msg_text, parse_mode="HTML", reply_markup=keyboard)
     return True
@@ -371,22 +441,28 @@ async def _handle_pending_reward_input(message: Message, user) -> bool:
     if user.id not in _pending_reward_input:
         return False
 
-    reward_type = _pending_reward_input.pop(user.id)
+    reward_type, timestamp = _pending_reward_input[user.id]
+
+    # TTL: если прошло больше 5 минут — сбрасываем
+    if time.time() - timestamp > _REWARD_INPUT_TTL:
+        del _pending_reward_input[user.id]
+        return False
+
+    del _pending_reward_input[user.id]
     text = (message.text or "").strip()
 
     if not text.isdigit() or int(text) <= 0:
         await message.answer("❌ Введите положительное целое число.")
-        _pending_reward_input[user.id] = reward_type  # вернуть состояние
+        _pending_reward_input[user.id] = (reward_type, timestamp)
         return True
 
     value = int(text)
-    from models.settings import set_points_value, get_points_config
+    from models.settings import set_points_value
 
     await set_points_value(reward_type, value)
 
     labels = {
         "bug_accepted": "🐛 Баг",
-        "crash_accepted": "💥 Краш",
         "game_played": "🎮 Игра",
     }
     label = labels.get(reward_type, reward_type)
@@ -398,8 +474,8 @@ async def _handle_pending_reward_input(message: Message, user) -> bool:
     return True
 
 
-async def _handle_tester_dm(message: Message, user) -> bool:
-    """Обрабатывает ЛС тестера: статистика или рейтинг. Возвращает True если обработано."""
+async def _handle_tester_commands(message: Message, user) -> bool:
+    """Обрабатывает команды тестера: статистика или рейтинг. Возвращает True если обработано."""
     if not message.text:
         return False
 
@@ -417,7 +493,6 @@ async def _handle_tester_dm(message: Message, user) -> bool:
             f"👤 {uname}\n"
             f"⭐ Баллы: <b>{tester['total_points']}</b>\n"
             f"📝 Баги: {tester['total_bugs']}\n"
-            f"💥 Краши: {tester['total_crashes']}\n"
             f"🎮 Игры: {tester['total_games']}\n"
             f"⚠️ Предупреждения: {tester['warnings_count']}/3",
             parse_mode="HTML"
@@ -444,6 +519,9 @@ async def handle_private_message(message: Message, bot: Bot):
     # === Режим наблюдения: отвечаем фиксированной фразой ===
     import config
     if config.BOT_MODE == "observe":
+        # Даём владельцу переключить режим даже в observe
+        if await _handle_mode_toggle(message, user):
+            return
         await message.answer(OBSERVE_REPLY)
         return
 
@@ -458,7 +536,7 @@ async def handle_private_message(message: Message, bot: Bot):
 
     # Тестеры в ЛС — только статистика и рейтинг, без Claude API
     if role == "tester":
-        handled = await _handle_tester_dm(message, user)
+        handled = await _handle_tester_commands(message, user)
         if not handled:
             await message.answer(
                 "🚫 В личных сообщениях тебе доступны только:\n\n"
@@ -469,8 +547,10 @@ async def handle_private_message(message: Message, bot: Bot):
             )
         return
 
-    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    # === Команды владельца: переключение режима / личности / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
+        return
+    if await _handle_personality_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):
         return
@@ -487,7 +567,10 @@ async def handle_private_message(message: Message, bot: Bot):
     if await _handle_draft_task_edit(message, user):
         return
 
-    await bot.send_chat_action(message.chat.id, "typing")
+    try:
+        await bot.send_chat_action(message.chat.id, "typing")
+    except Exception:
+        pass
 
     print(f"\n💬 [ЛС] [{role}] @{user.username}: {message.text[:100]}")
 

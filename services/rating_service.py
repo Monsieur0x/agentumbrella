@@ -3,14 +3,8 @@
 """
 from aiogram import Bot
 from models.tester import get_all_testers
-from models.admin import get_all_admins
+from models.admin import get_admin_ids
 from config import GROUP_ID, TOPIC_IDS
-
-
-async def _get_admin_ids() -> set[int]:
-    """Возвращает set telegram_id всех админов и владельца."""
-    admins = await get_all_admins()
-    return {a["telegram_id"] for a in admins}
 
 
 async def get_rating(top_count: int = 0) -> dict:
@@ -19,7 +13,7 @@ async def get_rating(top_count: int = 0) -> dict:
     top_count=0 — все тестеры.
     """
     all_testers = await get_all_testers(active_only=False)
-    admin_ids = await _get_admin_ids()
+    admin_ids = await get_admin_ids()
 
     # Все тестеры (без админов) — для общей статистики
     all_non_admin = [t for t in all_testers if t["telegram_id"] not in admin_ids]
@@ -39,7 +33,6 @@ async def get_rating(top_count: int = 0) -> dict:
             "username": tag,
             "total_points": t["total_points"],
             "total_bugs": t["total_bugs"],
-            "total_crashes": t["total_crashes"],
             "total_games": t["total_games"],
         })
 
@@ -73,12 +66,10 @@ def format_rating_message(data: dict) -> str:
         uname = item["username"] or "?"
         pts = item["total_points"]
         bugs = item["total_bugs"]
-        crashes = item["total_crashes"]
         games = item["total_games"]
         lines.append(
             f"{pos}. {uname} — {pts} {_plural(pts, 'балл', 'балла', 'баллов')} | "
             f"{bugs} {_plural(bugs, 'баг', 'бага', 'багов')}, "
-            f"{crashes} {_plural(crashes, 'краш', 'краша', 'крашей')}, "
             f"{games} {_plural(games, 'игра', 'игры', 'игр')}"
         )
 

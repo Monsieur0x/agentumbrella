@@ -1,12 +1,11 @@
 """
 Сервис проверки дублей багов через Anthropic Claude (дешёвая модель).
+Использует общий throttle из agent.client для защиты от rate limit.
 """
 import json
-import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, DUPLICATE_CHECK_LIMIT
+from config import MODEL, DUPLICATE_CHECK_LIMIT
 from models.bug import get_recent_bugs
-
-client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+from agent.client import call_claude
 
 
 async def check_duplicate(title: str, description: str) -> dict:
@@ -29,7 +28,7 @@ async def check_duplicate(title: str, description: str) -> dict:
 
     # Формируем список существующих багов с описаниями
     bugs_text = "\n".join(
-        f"- ID #{b['id']}: {b['title']} | Описание: {b.get('description', '')} ({b['type']})"
+        f"- ID #{b.get('display_number') or b['id']}: {b['title']} | Описание: {b.get('description', '')} ({b['type']})"
         for b in candidates
     )
 
@@ -54,7 +53,7 @@ async def check_duplicate(title: str, description: str) -> dict:
 {{"is_duplicate": true/false, "similar_bug_id": число_или_null, "explanation": "краткое пояснение на русском"}}"""
 
     try:
-        response = await client.messages.create(
+        response = await call_claude(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200,
@@ -79,6 +78,6 @@ async def check_duplicate(title: str, description: str) -> dict:
     except json.JSONDecodeError as e:
         print(f"⚠️ Ошибка парсинга JSON от Claude: {e}")
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": "Не удалось распарсить ответ ИИ"}
-    except anthropic.APIError as e:
+    except Exception as e:
         print(f"⚠️ Ошибка Claude API при проверке дублей: {e}")
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": f"Ошибка API: {str(e)[:100]}"}

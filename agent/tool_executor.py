@@ -7,7 +7,7 @@ from models.tester import (
     decrement_warnings, reset_warnings, reset_all_warnings
 )
 from models.bug import get_bug, mark_duplicate, get_bug_stats, get_recent_bugs, delete_bug, delete_all_bugs, clear_weeek_task_id
-from models.admin import add_admin, remove_admin, get_all_admins
+from models.admin import add_admin, remove_admin, get_all_admins, get_admin_ids
 from services.points_service import award_points, award_points_bulk
 from services.rating_service import get_rating
 from database import get_db
@@ -210,12 +210,10 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 # === Реализации функций ===
 
 async def _get_testers_list(include_inactive: bool = False) -> dict:
-    from models.admin import get_all_admins
     testers = await get_all_testers(active_only=not include_inactive)
-    admins = await get_all_admins()
-    admin_ids = {a["telegram_id"] for a in admins}
+    admin_ids_set = await get_admin_ids()
     # Исключаем админов и владельца — показываем только тестеров
-    testers = [t for t in testers if t["telegram_id"] not in admin_ids]
+    testers = [t for t in testers if t["telegram_id"] not in admin_ids_set]
     return {
         "total": len(testers),
         "testers": [
@@ -240,7 +238,6 @@ async def _get_tester_stats(username: str) -> dict:
         "full_name": tester["full_name"],
         "total_points": tester["total_points"],
         "total_bugs": tester["total_bugs"],
-        "total_crashes": tester["total_crashes"],
         "total_games": tester["total_games"],
         "warnings_count": tester["warnings_count"],
         "is_active": tester["is_active"],
@@ -252,11 +249,34 @@ async def _get_team_stats(period: str) -> dict:
     testers = await get_all_testers()
     bugs = await get_bug_stats(period)
 
-    total_points = sum(t["total_points"] for t in testers)
-    total_games = sum(t["total_games"] for t in testers)
+    # Фильтрация баллов по периоду через points_log
+    period_filter = {
+        "today": "-1 days",
+        "week": "-7 days",
+        "month": "-30 days",
+    }
 
-    # Топ-3
-    top3 = testers[:3] if testers else []
+    if period in period_filter:
+        db = await get_db()
+        cursor = await db.execute(
+            "SELECT tester_id, SUM(amount) as period_points FROM points_log "
+            "WHERE created_at >= datetime('now', ?) GROUP BY tester_id",
+            (period_filter[period],),
+        )
+        rows = await cursor.fetchall()
+        period_points_map = {r["tester_id"]: r["period_points"] for r in rows}
+        total_points = sum(period_points_map.values())
+
+        # Для top-3 по периоду
+        for t in testers:
+            t["_period_points"] = period_points_map.get(t["telegram_id"], 0)
+        testers_sorted = sorted(testers, key=lambda t: t["_period_points"], reverse=True)
+        top3 = testers_sorted[:3]
+    else:
+        total_points = sum(t["total_points"] for t in testers)
+        top3 = testers[:3] if testers else []
+
+    total_games = sum(t["total_games"] for t in testers)
 
     return {
         "period": period,
@@ -265,7 +285,8 @@ async def _get_team_stats(period: str) -> dict:
         "total_games": total_games,
         "bugs_stats": bugs,
         "top_3": [
-            {"username": _tag(t["username"]), "points": t["total_points"],
+            {"username": _tag(t["username"]),
+             "points": t.get("_period_points", t["total_points"]),
              "bugs": t["total_bugs"], "games": t["total_games"]}
             for t in top3
         ],
@@ -309,11 +330,11 @@ async def _compare_testers(u1: str, u2: str) -> dict:
     return {
         "tester_1": {
             "username": _tag(t1["username"]), "points": t1["total_points"],
-            "bugs": t1["total_bugs"], "crashes": t1["total_crashes"], "games": t1["total_games"],
+            "bugs": t1["total_bugs"], "games": t1["total_games"],
         },
         "tester_2": {
             "username": _tag(t2["username"]), "points": t2["total_points"],
-            "bugs": t2["total_bugs"], "crashes": t2["total_crashes"], "games": t2["total_games"],
+            "bugs": t2["total_bugs"], "games": t2["total_games"],
         }
     }
 
@@ -341,12 +362,11 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
     # Деактивация при 3 предупреждениях
     deactivated = False
     if new_count >= 3:
-        db2 = await get_db()
-        await db2.execute(
+        await db.execute(
             "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
             (tester["telegram_id"],)
         )
-        await db2.commit()
+        await db.commit()
         deactivated = True
         await log_admin(f"Тестер @{tester['username']} деактивирован (3/3 предупреждений)")
 
@@ -382,16 +402,13 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
 
 async def _issue_warning_bulk(usernames: str, reason: str, admin_id: int) -> dict:
     """Выдаёт варны нескольким тестерам или всем сразу."""
-    from models.admin import get_all_admins
-
     usernames = usernames.strip()
 
     # === Всем тестерам ===
     if usernames.lower() == "all":
         testers = await get_all_testers(active_only=True)
-        admins = await get_all_admins()
-        admin_ids = {a["telegram_id"] for a in admins}
-        testers = [t for t in testers if t["telegram_id"] not in admin_ids]
+        admin_ids_set = await get_admin_ids()
+        testers = [t for t in testers if t["telegram_id"] not in admin_ids_set]
         names = [t["username"] for t in testers if t.get("username")]
     else:
         names = [_normalize_username(u.strip()) for u in usernames.split(",") if u.strip()]
@@ -448,17 +465,17 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
             results.append({"username": _tag(tester["username"]), "warnings": 0, "skipped": True})
             continue
 
+        db = await get_db()
+
         # amount=0 означает сбросить все варны
         if amount == 0:
             new_count = await reset_warnings(tester["telegram_id"])
             # Удаляем все записи варнов тестера
-            db = await get_db()
             await db.execute("DELETE FROM warnings WHERE tester_id = ?", (tester["telegram_id"],))
             await db.commit()
         else:
             new_count = await decrement_warnings(tester["telegram_id"], amount)
             # Удаляем последние N записей варнов
-            db = await get_db()
             await db.execute(
                 "DELETE FROM warnings WHERE id IN ("
                 "  SELECT id FROM warnings WHERE tester_id = ? ORDER BY created_at DESC LIMIT ?"
@@ -469,7 +486,6 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
 
         # Реактивируем если был деактивирован по варнам и теперь < 3
         if not tester["is_active"] and new_count < 3:
-            db = await get_db()
             await db.execute(
                 "UPDATE testers SET is_active = 1 WHERE telegram_id = ?",
                 (tester["telegram_id"],)
@@ -635,7 +651,6 @@ async def _manage_admin(action: str, username: str = None) -> dict:
 async def _refresh_testers() -> dict:
     """Проверяет членство каждого тестера в группе и деактивирует кикнутых/ушедших."""
     from config import GROUP_ID
-    from models.admin import get_all_admins
 
     bot = get_bot()
     if not bot:
@@ -644,8 +659,7 @@ async def _refresh_testers() -> dict:
         return {"error": "GROUP_ID не задан"}
 
     testers = await get_all_testers(active_only=True)
-    admins = await get_all_admins()
-    admin_ids = {a["telegram_id"] for a in admins}
+    admin_ids = await get_admin_ids()
 
     deactivated = []
     still_active = []
@@ -700,7 +714,7 @@ async def _search_bugs(query: str = None, tester: str = None,
         return {"count": 1, "bugs": [bug]}
 
     # Поиск по фильтрам
-    sql = """SELECT b.id, b.title, b.type, b.status, b.created_at,
+    sql = """SELECT b.id, b.display_number, b.title, b.type, b.status, b.created_at,
                     b.script_name, b.youtube_link,
                     b.weeek_task_id, b.weeek_board_name, b.weeek_column_name,
                     t.username
@@ -721,7 +735,8 @@ async def _search_bugs(query: str = None, tester: str = None,
         sql += " AND b.status = ?"
         params.append(status)
 
-    sql += f" ORDER BY b.id DESC LIMIT {SEARCH_BUGS_LIMIT}"
+    sql += " ORDER BY b.id DESC LIMIT ?"
+    params.append(SEARCH_BUGS_LIMIT)
     cursor = await db.execute(sql, params)
     rows = await cursor.fetchall()
     bugs = []
@@ -795,7 +810,8 @@ async def _delete_bug(bug_id: int = None, target: str = "both",
     if not bug:
         return {"error": f"Баг #{bug_id} не найден"}
 
-    result = {"bug_id": bug_id, "target": target}
+    dn = bug.get("display_number") or bug_id
+    result = {"bug_id": bug_id, "display_number": dn, "target": target}
 
     weeek_task_id = bug.get("weeek_task_id")
 
@@ -819,7 +835,7 @@ async def _delete_bug(bug_id: int = None, target: str = "both",
         result["db"] = "удалён из БД" if deleted else "не удалось удалить из БД"
 
     result["success"] = True
-    await log_info(f"Баг #{bug_id} удалён ({target})")
+    await log_info(f"Баг #{dn} удалён ({target})")
     return result
 
 

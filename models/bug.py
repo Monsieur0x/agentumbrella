@@ -8,28 +8,33 @@ async def create_bug(tester_id: int, message_id: int,
                      script_name: str = "", steps: str = "",
                      youtube_link: str = "", file_id: str = "",
                      file_type: str = "",
-                     # Обратная совместимость со старыми полями
-                     title: str = "", description: str = "",
-                     expected: str = "", actual: str = "",
                      bug_type: str = "bug",
-                     points: int = 0, status: str = "pending") -> int:
-    """Создаёт баг, возвращает ID."""
-    # Маппинг: script_name → title, steps → description для совместимости
-    effective_title = script_name or title
-    effective_desc = steps or description
+                     points: int = 0, status: str = "pending") -> tuple[int, int]:
+    """Создаёт баг, возвращает (ID, display_number)."""
     db = await get_db()
+
+    # Атомарный INSERT с вычислением display_number в одном запросе
     cursor = await db.execute(
         """INSERT INTO bugs
-           (tester_id, message_id, title, description, expected, actual,
+           (tester_id, message_id, title, description,
             type, points_awarded, status,
-            script_name, steps, youtube_link, file_id, file_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (tester_id, message_id, effective_title, effective_desc,
-         expected, actual, bug_type, points, status,
+            script_name, steps, youtube_link, file_id, file_type,
+            display_number)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   (SELECT COALESCE(MAX(display_number), 0) + 1 FROM bugs))""",
+        (tester_id, message_id, script_name, steps,
+         bug_type, points, status,
          script_name, steps, youtube_link, file_id, file_type)
     )
     await db.commit()
-    return cursor.lastrowid
+    bug_id = cursor.lastrowid
+
+    # Читаем присвоенный display_number
+    cursor = await db.execute(
+        "SELECT display_number FROM bugs WHERE id = ?", (bug_id,)
+    )
+    row = await cursor.fetchone()
+    return bug_id, row[0]
 
 
 async def get_bug(bug_id: int) -> dict | None:
@@ -49,7 +54,7 @@ async def get_recent_bugs(limit: int = 50) -> list[dict]:
     """Последние N багов для проверки дублей."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, title, description, type FROM bugs WHERE status = 'accepted' ORDER BY id DESC LIMIT ?",
+        "SELECT id, display_number, title, description, type FROM bugs WHERE status = 'accepted' ORDER BY id DESC LIMIT ?",
         (limit,)
     )
     rows = await cursor.fetchall()
@@ -105,8 +110,7 @@ async def get_bug_stats(period: str = "all", bug_type: str = "all") -> dict:
             COUNT(*) as total,
             SUM(CASE WHEN status = 'duplicate' THEN 1 ELSE 0 END) as duplicates,
             SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END) as accepted,
-            SUM(CASE WHEN type = 'bug' THEN 1 ELSE 0 END) as bugs,
-            SUM(CASE WHEN type = 'crash' THEN 1 ELSE 0 END) as crashes
+            SUM(CASE WHEN type = 'bug' THEN 1 ELSE 0 END) as bugs
         FROM bugs {where_sql}
     """, params)
     row = await cursor.fetchone()

@@ -25,7 +25,6 @@ async def init_db():
                 full_name TEXT,
                 total_points INTEGER DEFAULT 0,
                 total_bugs INTEGER DEFAULT 0,
-                total_crashes INTEGER DEFAULT 0,
                 total_games INTEGER DEFAULT 0,
                 warnings_count INTEGER DEFAULT 0,
                 is_active BOOLEAN DEFAULT 1,
@@ -49,8 +48,6 @@ async def init_db():
                 message_id BIGINT,
                 title TEXT,
                 description TEXT,
-                expected TEXT,
-                actual TEXT,
                 type TEXT DEFAULT 'bug',
                 status TEXT DEFAULT 'pending',
                 weeek_task_id TEXT,
@@ -100,8 +97,9 @@ async def init_db():
         try:
             await db.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'published'")
             await db.commit()
-        except Exception:
-            pass  # Колонка уже существует
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                print(f"⚠️ Миграция tasks.status: {e}")
 
         # Миграция: добавляем новые поля для багов если их нет
         # SAFETY: col_name/col_type hardcoded below, never from user input
@@ -113,13 +111,39 @@ async def init_db():
             ("file_type", "TEXT"),
             ("weeek_board_name", "TEXT"),
             ("weeek_column_name", "TEXT"),
+            ("display_number", "INTEGER"),
         ]
         for col_name, col_type in new_bug_columns:
             try:
                 await db.execute(f"ALTER TABLE bugs ADD COLUMN {col_name} {col_type}")
                 await db.commit()
-            except Exception:
-                pass  # Колонка уже существует
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    print(f"⚠️ Миграция bugs.{col_name}: {e}")
+
+        # Индексы для ускорения запросов
+        await db.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_bugs_tester_id ON bugs(tester_id);
+            CREATE INDEX IF NOT EXISTS idx_bugs_status ON bugs(status);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bugs_display_number ON bugs(display_number);
+            CREATE INDEX IF NOT EXISTS idx_points_log_tester_id ON points_log(tester_id);
+            CREATE INDEX IF NOT EXISTS idx_points_log_created_at ON points_log(created_at);
+            CREATE INDEX IF NOT EXISTS idx_warnings_tester_id ON warnings(tester_id);
+        """)
+        await db.commit()
+
+        # Миграция: заполняем display_number для существующих багов
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM bugs WHERE display_number IS NULL"
+        )
+        row = await cursor.fetchone()
+        if row[0] > 0:
+            await db.execute("""
+                UPDATE bugs SET display_number = (
+                    SELECT COUNT(*) FROM bugs b2 WHERE b2.id <= bugs.id
+                ) WHERE display_number IS NULL
+            """)
+            await db.commit()
 
     # Открываем shared-соединение с WAL-mode
     _shared_db = await aiosqlite.connect(DB_PATH)

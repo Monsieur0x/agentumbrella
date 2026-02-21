@@ -16,9 +16,6 @@ from handlers.message_router import router as message_router
 from handlers.callback_handler import router as callback_router
 from utils.logger import set_bot
 
-# Event для ожидания выбора режима владельцем
-mode_selected_event = asyncio.Event()
-
 
 async def main():
     # === Проверка конфигурации ===
@@ -80,14 +77,23 @@ async def main():
             [
                 InlineKeyboardButton(text="✅ Рабочий режим", callback_data="mode_active"),
                 InlineKeyboardButton(text="👁 Режим наблюдения", callback_data="mode_observe"),
-            ]
+            ],
+            [
+                InlineKeyboardButton(text="🤖 Обычный", callback_data="personality_default"),
+                InlineKeyboardButton(text="🎉 Душа", callback_data="personality_soul"),
+            ],
+            [
+                InlineKeyboardButton(text="💀 Токсик", callback_data="personality_toxic"),
+                InlineKeyboardButton(text="✏️ Кастом", callback_data="personality_custom"),
+            ],
         ])
         await bot.send_message(
             OWNER_TELEGRAM_ID,
             "🟢 <b>Umbrella Bot запущен!</b>\n\n"
             f"Бот: @{bot_info.username}\n"
-            f"Режим: <b>✅ Рабочий</b>\n\n"
-            "Переключить режим можно кнопкой ниже или командой в чате:",
+            f"Режим: <b>✅ Рабочий</b>\n"
+            f"Личность: <b>🤖 Обычный</b>\n\n"
+            "Переключить режим и личность можно кнопками ниже или командой в чате:",
             reply_markup=keyboard,
         )
     except Exception as e:
@@ -96,7 +102,13 @@ async def main():
     print(f"\n🟢 Бот запущен! Режим: ✅ Рабочий\n")
 
     # Запускаем polling
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        from services.weeek_service import close_client
+        from database import close_db
+        await close_client()
+        await close_db()
 
 
 if __name__ == "__main__":

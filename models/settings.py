@@ -38,6 +38,6 @@ async def get_points_config() -> dict[str, int]:
 
 async def set_points_value(reward_type: str, value: int):
     """Установить количество баллов за награду.
-    reward_type: bug_accepted / crash_accepted / game_played
+    reward_type: bug_accepted / game_played
     """
     await set_setting(f"points_{reward_type}", str(value))

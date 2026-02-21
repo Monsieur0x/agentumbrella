@@ -26,6 +26,11 @@ from database import get_db
 router = Router()
 
 
+def _safe_html_text(callback: CallbackQuery) -> str:
+    """Возвращает html_text сообщения, безопасный для конкатенации с HTML."""
+    return callback.message.html_text or html.escape(callback.message.text or "")
+
+
 # ─────────────────────────────────────────────
 #  Выбор режима работы при запуске
 # ─────────────────────────────────────────────
@@ -59,17 +64,75 @@ async def handle_mode_select(callback: CallbackQuery):
     )
     await callback.answer(f"Выбран: {label}")
 
-    # При первом запуске — разблокируем старт
-    try:
-        from bot import mode_selected_event
-        mode_selected_event.set()
-    except ImportError:
-        pass
+
+# ─────────────────────────────────────────────
+#  Выбор личности бота
+# ─────────────────────────────────────────────
+
+_PERSONALITY_LABELS = {
+    "default": "🤖 Обычный",
+    "soul": "🎉 Душа компании",
+    "toxic": "💀 Токсик",
+    "custom": "✏️ Кастом",
+}
+
+
+def build_personality_keyboard():
+    """Создаёт inline-клавиатуру выбора личности."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🤖 Обычный", callback_data="personality_default"),
+            InlineKeyboardButton(text="🎉 Душа компании", callback_data="personality_soul"),
+        ],
+        [
+            InlineKeyboardButton(text="💀 Токсик", callback_data="personality_toxic"),
+            InlineKeyboardButton(text="✏️ Кастом", callback_data="personality_custom"),
+        ],
+    ])
+
+
+@router.callback_query(F.data.startswith("personality_"))
+async def handle_personality_select(callback: CallbackQuery):
+    """Владелец выбирает личность бота."""
+    if not await is_owner(callback.from_user.id):
+        await callback.answer("Только владелец может выбирать личность", show_alert=True)
+        return
+
+    import config
+
+    personality = callback.data.replace("personality_", "")
+
+    if personality == "custom":
+        await callback.message.edit_text(
+            "✏️ <b>Кастомная личность</b>\n\n"
+            "Отправьте текст описания личности в чат.\n"
+            "Например: «кастом режим: Говори как пират из Dota 2, вставляй arrr и yo ho ho»",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+        await callback.answer("Отправьте текст личности в чат")
+        return
+
+    if personality not in _PERSONALITY_LABELS:
+        await callback.answer("Неизвестная личность", show_alert=True)
+        return
+
+    config.BOT_PERSONALITY = personality
+    label = _PERSONALITY_LABELS[personality]
+
+    keyboard = build_personality_keyboard()
+    await callback.message.edit_text(
+        f"🎭 <b>Личность бота</b>\n\nТекущая: <b>{label}</b>",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    await callback.answer(f"Выбрано: {label}")
 
 
 async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     """Общая логика принятия бага: статус, баллы, points_log, счётчики. Возвращает начисленные баллы."""
     points = bug["points_awarded"]
+    dn = bug.get("display_number") or bug_id
 
     db = await get_db()
     await db.execute(
@@ -78,17 +141,13 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     await db.commit()
 
     await update_tester_points(bug["tester_id"], points)
-    if bug["type"] == "crash":
-        await update_tester_stats(bug["tester_id"], crashes=1)
-    else:
-        await update_tester_stats(bug["tester_id"], bugs=1)
+    await update_tester_stats(bug["tester_id"], bugs=1)
 
     # Запись в points_log
-    db = await get_db()
     await db.execute(
         "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
         (bug["tester_id"], points,
-         f"{'Краш' if bug['type'] == 'crash' else 'Баг'} #{bug_id} принят",
+         f"Баг #{dn} принят",
          "bug", admin_id)
     )
     await db.commit()
@@ -97,12 +156,11 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     bot = get_bot()
     if bot:
         try:
-            emoji = "💥" if bug["type"] == "crash" else "✅"
             await bot.send_message(
                 chat_id=bug["tester_id"],
                 text=(
-                    f"{emoji} Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
-                    f"<b>#{bug_id}</b> принят! +{points} б. 🎉"
+                    f"✅ Твой баг "
+                    f"<b>#{dn}</b> принят! +{points} б. 🎉"
                 ),
                 parse_mode="HTML",
             )
@@ -116,61 +174,116 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
 #  Тестер: отправить без файла / прикрепить файл
 # ─────────────────────────────────────────────
 
-@router.callback_query(F.data.startswith("bug_nofile_yes:"))
-async def handle_bug_nofile_yes(callback: CallbackQuery):
-    """Тестер решил отправить баг без файла."""
+async def _handle_bug_skip(callback: CallbackQuery):
+    """Общая логика для кнопок bug_skip_*."""
     bug_id = int(callback.data.split(":")[1])
     bug = await get_bug(bug_id)
     if not bug:
         await callback.answer("Баг не найден", show_alert=True)
-        return
+        return None
 
-    if bug["status"] != "waiting_file":
+    if bug["status"] != "waiting_media":
         await callback.answer("Баг уже обработан", show_alert=True)
-        return
+        return None
 
-    # Только автор бага может нажимать
     if callback.from_user.id != bug["tester_id"]:
         await callback.answer("Это не твой баг", show_alert=True)
+        return None
+
+    return bug_id
+
+
+@router.callback_query(F.data.startswith("bug_skip_video:"))
+async def handle_bug_skip_video(callback: CallbackQuery):
+    """Без видео — если файл уже есть, отправляем; иначе ждём файл."""
+    bug_id = await _handle_bug_skip(callback)
+    if bug_id is None:
         return
 
-    from handlers.bug_handler import submit_bug_without_file
-    success = await submit_bug_without_file(bug_id)
+    bug = await get_bug(bug_id)
+    dn = bug.get("display_number") or bug_id
+    if bug.get("file_id"):
+        # Файл уже есть → отправляем
+        from handlers.bug_handler import submit_bug_as_is
+        success = await submit_bug_as_is(bug_id)
+        if success:
+            await callback.message.edit_text(
+                f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
+                parse_mode="HTML", reply_markup=None,
+            )
+            await callback.answer("Баг отправлен")
+        else:
+            await callback.answer("Не удалось отправить баг", show_alert=True)
+    else:
+        # Файла нет → ждём файл
+        db = await get_db()
+        await db.execute(
+            "UPDATE bugs SET status = 'waiting_file' WHERE id = ?", (bug_id,),
+        )
+        await db.commit()
+        await callback.message.edit_text(
+            f"📎 Отправь файл в этот топик — он прикрепится к багу <b>#{dn}</b>.",
+            parse_mode="HTML", reply_markup=None,
+        )
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bug_skip_file:"))
+async def handle_bug_skip_file(callback: CallbackQuery):
+    """Без файла — если видео уже есть, отправляем; иначе ждём видео-ссылку."""
+    bug_id = await _handle_bug_skip(callback)
+    if bug_id is None:
+        return
+
+    bug = await get_bug(bug_id)
+    dn = bug.get("display_number") or bug_id
+    if bug.get("youtube_link"):
+        # Видео уже есть → отправляем
+        from handlers.bug_handler import submit_bug_as_is
+        success = await submit_bug_as_is(bug_id)
+        if success:
+            await callback.message.edit_text(
+                f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
+                parse_mode="HTML", reply_markup=None,
+            )
+            await callback.answer("Баг отправлен")
+        else:
+            await callback.answer("Не удалось отправить баг", show_alert=True)
+    else:
+        # Видео нет → ждём ссылку
+        db = await get_db()
+        await db.execute(
+            "UPDATE bugs SET status = 'waiting_video' WHERE id = ?", (bug_id,),
+        )
+        await db.commit()
+        await callback.message.edit_text(
+            f"🎥 Отправь ссылку на видео (YouTube) в этот топик — она прикрепится к багу <b>#{dn}</b>.",
+            parse_mode="HTML", reply_markup=None,
+        )
+        await callback.answer()
+
+
+@router.callback_query(F.data.startswith("bug_skip_both:"))
+async def handle_bug_skip_both(callback: CallbackQuery):
+    """Без видео и файла — сразу отправляем."""
+    bug_id = await _handle_bug_skip(callback)
+    if bug_id is None:
+        return
+
+    bug = await get_bug(bug_id)
+    dn = bug.get("display_number") or bug_id if bug else bug_id
+
+    from handlers.bug_handler import submit_bug_as_is
+    success = await submit_bug_as_is(bug_id)
 
     if success:
         await callback.message.edit_text(
-            f"🐛 Баг <b>#{bug_id}</b> отправлен владельцу на подтверждение ⏳",
-            parse_mode="HTML",
-            reply_markup=None,
+            f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
+            parse_mode="HTML", reply_markup=None,
         )
         await callback.answer("Баг отправлен")
     else:
         await callback.answer("Не удалось отправить баг", show_alert=True)
-
-
-@router.callback_query(F.data.startswith("bug_nofile_no:"))
-async def handle_bug_nofile_no(callback: CallbackQuery):
-    """Тестер хочет прикрепить файл — ждём."""
-    bug_id = int(callback.data.split(":")[1])
-    bug = await get_bug(bug_id)
-    if not bug:
-        await callback.answer("Баг не найден", show_alert=True)
-        return
-
-    if bug["status"] != "waiting_file":
-        await callback.answer("Баг уже обработан", show_alert=True)
-        return
-
-    if callback.from_user.id != bug["tester_id"]:
-        await callback.answer("Это не твой баг", show_alert=True)
-        return
-
-    await callback.message.edit_text(
-        f"📎 Отправь файл в этот топик — он прикрепится к багу <b>#{bug_id}</b>.",
-        parse_mode="HTML",
-        reply_markup=None,
-    )
-    await callback.answer()
 
 
 # ─────────────────────────────────────────────
@@ -195,13 +308,14 @@ async def handle_bug_confirm(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
+    dn = bug.get("display_number") or bug_id
     points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek
     await _show_board_selection(callback, bug_id)
-    await callback.answer(f"Баг #{bug_id} подтверждён, +{points} б.")
+    await callback.answer(f"Баг #{dn} подтверждён, +{points} б.")
     await log_info(
-        f"Баг #{bug_id} подтверждён владельцем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} подтверждён владельцем @{callback.from_user.username}, +{points} б."
     )
 
 
@@ -223,6 +337,8 @@ async def handle_bug_reject(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
+    dn = bug.get("display_number") or bug_id
+
     db = await get_db()
     await db.execute("UPDATE bugs SET status = 'rejected' WHERE id = ?", (bug_id,))
     await db.commit()
@@ -234,8 +350,8 @@ async def handle_bug_reject(callback: CallbackQuery):
             await bot.send_message(
                 chat_id=bug["tester_id"],
                 text=(
-                    f"❌ Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
-                    f"<b>#{bug_id}</b> был отклонён."
+                    f"❌ Твой баг "
+                    f"<b>#{dn}</b> был отклонён."
                 ),
                 parse_mode="HTML",
             )
@@ -243,12 +359,12 @@ async def handle_bug_reject(callback: CallbackQuery):
             pass
 
     await callback.message.edit_text(
-        (callback.message.text or "") + f"\n\n❌ <b>Отклонён</b> (@{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> (@{callback.from_user.username})",
         parse_mode="HTML",
         reply_markup=None,
     )
-    await callback.answer(f"Баг #{bug_id} отклонён")
-    await log_info(f"Баг #{bug_id} отклонён владельцем @{callback.from_user.username}")
+    await callback.answer(f"Баг #{dn} отклонён")
+    await log_info(f"Баг #{dn} отклонён владельцем @{callback.from_user.username}")
 
 
 async def _show_board_selection(callback: CallbackQuery, bug_id: int):
@@ -260,7 +376,7 @@ async def _show_board_selection(callback: CallbackQuery, bug_id: int):
     if not boards:
         weeek_note = "Weeek отключён" if not config.WEEEK_ENABLED else "Weeek не настроен"
         await callback.message.edit_text(
-            (callback.message.text or "") + f"\n\n✅ <b>Подтверждён</b> ({weeek_note})",
+            _safe_html_text(callback) + f"\n\n✅ <b>Подтверждён</b> ({weeek_note})",
             parse_mode="HTML",
             reply_markup=None,
         )
@@ -284,7 +400,7 @@ async def _show_board_selection(callback: CallbackQuery, bug_id: int):
     )])
 
     await callback.message.edit_text(
-        (callback.message.text or "") + "\n\n✅ <b>Подтверждён!</b> Выберите доску Weeek:",
+        _safe_html_text(callback) + "\n\n✅ <b>Подтверждён!</b> Выберите доску Weeek:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
@@ -372,7 +488,6 @@ async def _create_weeek_task_and_finish(
     result = await weeek_create_task(
         title=bug.get("script_name") or bug.get("title", ""),
         description=description,
-        bug_type=bug.get("type", "bug"),
         tester_username="",
         bug_id=bug_id,
         board_column_id=col_id,
@@ -432,12 +547,11 @@ async def _create_weeek_task_and_finish(
                 print(f"⚠️ Не удалось прикрепить файл к задаче Weeek #{task_id}: {e}")
 
         await callback.message.edit_text(
-            (callback.message.text or "") + f"\n\n📋 Отправлен в Weeek: <b>«{html.escape(board_name)}»</b> ✅",
+            _safe_html_text(callback) + f"\n\n📋 Отправлен в Weeek: <b>«{html.escape(board_name)}»</b> ✅",
             parse_mode="HTML",
             reply_markup=None,
         )
         await callback.answer(f"Задача создана в {board_name}")
-        await log_info(f"Баг #{bug_id} → Weeek «{board_name}»")
     else:
         await callback.answer(
             f"Ошибка Weeek: {result.get('error', '?')}", show_alert=True
@@ -451,14 +565,12 @@ async def handle_weeek_skip(callback: CallbackQuery):
         await callback.answer("Только владелец", show_alert=True)
         return
 
-    bug_id = int(callback.data.split(":")[1])
     await callback.message.edit_text(
-        (callback.message.text or "") + "\n\n⏭ Не отправлен в Weeek",
+        _safe_html_text(callback) + "\n\n⏭ Не отправлен в Weeek",
         parse_mode="HTML",
         reply_markup=None,
     )
     await callback.answer("Пропущено")
-    await log_info(f"Баг #{bug_id} — Weeek пропущен")
 
 
 # ─────────────────────────────────────────────
@@ -522,14 +634,12 @@ async def handle_task_publish(callback: CallbackQuery):
         await db.commit()
 
     try:
-        original_html = callback.message.html_text or html.escape(callback.message.text or "")
         await callback.message.edit_text(
-            original_html + "\n\n✅ <b>Опубликовано!</b>",
+            _safe_html_text(callback) + "\n\n✅ <b>Опубликовано!</b>",
             parse_mode="HTML",
             reply_markup=None,
         )
     except Exception:
-        # Фоллбэк без HTML если edit_text упал
         try:
             await callback.message.edit_text(
                 (callback.message.text or "") + "\n\n✅ Опубликовано!",
@@ -555,9 +665,8 @@ async def handle_task_cancel(callback: CallbackQuery):
     await db.commit()
 
     try:
-        original_html = callback.message.html_text or html.escape(callback.message.text or "")
         await callback.message.edit_text(
-            original_html + "\n\n❌ <b>Отменено</b>",
+            _safe_html_text(callback) + "\n\n❌ <b>Отменено</b>",
             parse_mode="HTML",
             reply_markup=None,
         )
@@ -598,9 +707,8 @@ async def handle_rating_publish(callback: CallbackQuery):
     msg_id = await publish_rating_to_topic(bot, data, "")
     if msg_id:
         try:
-            original_html = callback.message.html_text or html.escape(callback.message.text or "")
             await callback.message.edit_text(
-                original_html + "\n\n✅ <b>Опубликовано!</b>",
+                _safe_html_text(callback) + "\n\n✅ <b>Опубликовано!</b>",
                 parse_mode="HTML",
                 reply_markup=None,
             )
@@ -626,9 +734,8 @@ async def handle_rating_cancel(callback: CallbackQuery):
         return
 
     try:
-        original_html = callback.message.html_text or html.escape(callback.message.text or "")
         await callback.message.edit_text(
-            original_html + "\n\n❌ <b>Отменено</b>",
+            _safe_html_text(callback) + "\n\n❌ <b>Отменено</b>",
             parse_mode="HTML",
             reply_markup=None,
         )
@@ -649,9 +756,24 @@ async def handle_rating_cancel(callback: CallbackQuery):
 
 _REWARD_LABELS = {
     "bug_accepted": "🐛 Баг",
-    "crash_accepted": "💥 Краш",
     "game_played": "🎮 Игра",
 }
+
+
+def build_rewards_menu(pts: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Формирует текст и клавиатуру меню настройки наград."""
+    msg_text = (
+        "⚙️ <b>Настройка наград</b>\n\n"
+        "Текущие значения:\n"
+        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
+        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
+        "Выберите категорию для изменения:"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
+        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
+    ])
+    return msg_text, keyboard
 
 
 @router.callback_query(F.data.startswith("reward_set:"))
@@ -721,21 +843,8 @@ async def handle_reward_val(callback: CallbackQuery):
 
     # Показываем обновлённое меню наград
     pts = await get_points_config()
-    msg_text = (
-        f"✅ {label} установлен: <b>{value}</b> б.\n\n"
-        "⚙️ <b>Настройка наград</b>\n\n"
-        "Текущие значения:\n"
-        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
-        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
-        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
-        "Выберите категорию для изменения:"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
-        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
-        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
-    ])
+    msg_text, keyboard = build_rewards_menu(pts)
+    msg_text = f"✅ {label} установлен: <b>{value}</b> б.\n\n" + msg_text
 
     await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer(f"{label}: {value} б.")
@@ -755,7 +864,8 @@ async def handle_reward_custom(callback: CallbackQuery):
         return
 
     from handlers.message_router import _pending_reward_input
-    _pending_reward_input[callback.from_user.id] = reward_type
+    import time
+    _pending_reward_input[callback.from_user.id] = (reward_type, time.time())
 
     label = _REWARD_LABELS[reward_type]
     await callback.message.edit_text(
@@ -776,21 +886,7 @@ async def handle_rewards_menu(callback: CallbackQuery):
 
     from models.settings import get_points_config
     pts = await get_points_config()
-
-    msg_text = (
-        "⚙️ <b>Настройка наград</b>\n\n"
-        "Текущие значения:\n"
-        f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
-        f"💥 Краш: <b>{pts['crash_accepted']}</b> б.\n"
-        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
-        "Выберите категорию для изменения:"
-    )
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
-        [InlineKeyboardButton(text="💥 Награды за краши", callback_data="reward_set:crash_accepted")],
-        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
-    ])
+    msg_text, keyboard = build_rewards_menu(pts)
 
     await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer()
@@ -817,6 +913,7 @@ async def handle_dup_confirm(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
+    dn = bug.get("display_number") or bug_id
     await mark_duplicate(bug_id)
 
     # Уведомляем тестера
@@ -826,8 +923,8 @@ async def handle_dup_confirm(callback: CallbackQuery):
             await bot.send_message(
                 chat_id=bug["tester_id"],
                 text=(
-                    f"🔄 Твой {'краш' if bug['type'] == 'crash' else 'баг'} "
-                    f"<b>#{bug_id}</b> был отклонён как дубль."
+                    f"🔄 Твой баг "
+                    f"<b>#{dn}</b> был отклонён как дубль."
                 ),
                 parse_mode="HTML",
             )
@@ -835,12 +932,12 @@ async def handle_dup_confirm(callback: CallbackQuery):
             pass
 
     await callback.message.edit_text(
-        (callback.message.text or "") + f"\n\n🔄 <b>Дубль</b> (решил @{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n🔄 <b>Дубль</b> (решил @{callback.from_user.username})",
         parse_mode="HTML",
         reply_markup=None,
     )
     await callback.answer("Баг помечен как дубль")
-    await log_info(f"Баг #{bug_id} помечен как дубль (@{callback.from_user.username})")
+    await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
 
 
 @router.callback_query(F.data.startswith("dup_notdup:"))
@@ -860,13 +957,14 @@ async def handle_dup_notdup(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
+    dn = bug.get("display_number") or bug_id
     points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek
     await _show_board_selection(callback, bug_id)
-    await callback.answer(f"Не дубль — баг #{bug_id} принят, +{points} б.")
+    await callback.answer(f"Не дубль — баг #{dn} принят, +{points} б.")
     await log_info(
-        f"Баг #{bug_id} — не дубль, принят владельцем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} — не дубль, принят владельцем @{callback.from_user.username}, +{points} б."
     )
 
 
@@ -878,14 +976,20 @@ async def handle_dup_yes(callback: CallbackQuery):
         return
 
     bug_id = int(callback.data.split(":")[1])
+    bug = await get_bug(bug_id)
+    if not bug:
+        await callback.answer("Баг не найден", show_alert=True)
+        return
+
+    dn = bug.get("display_number") or bug_id
     await mark_duplicate(bug_id)
 
     await callback.message.edit_text(
-        (callback.message.text or "") + f"\n\n✅ <b>Решение:</b> дубль (подтвердил @{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n✅ <b>Решение:</b> дубль (подтвердил @{callback.from_user.username})",
         parse_mode="HTML",
     )
     await callback.answer("Баг помечен как дубль")
-    await log_info(f"Баг #{bug_id} помечен как дубль (@{callback.from_user.username})")
+    await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
 
 
 @router.callback_query(F.data.startswith("dup_no:"))
@@ -912,7 +1016,7 @@ async def handle_dup_no(callback: CallbackQuery):
         await callback.answer("Баг уже обработан", show_alert=True)
         return
 
-    points = bug["points_awarded"] or 3
+    dn = bug.get("display_number") or bug_id
 
     points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
@@ -920,20 +1024,19 @@ async def handle_dup_no(callback: CallbackQuery):
     weeek_result = await weeek_create_task(
         title=bug.get("script_name") or bug.get("title", ""),
         description=bug.get("steps") or bug.get("description", ""),
-        bug_type=bug["type"],
         bug_id=bug_id,
     )
     weeek_info = " + Weeek ✅" if weeek_result.get("success") else ""
 
     await callback.message.edit_text(
-        (callback.message.text or "") + (
+        _safe_html_text(callback) + (
             f"\n\n✅ <b>Решение:</b> принят, +{points} б. "
             f"(@{callback.from_user.username}){weeek_info}"
         ),
         parse_mode="HTML",
     )
-    await callback.answer(f"Баг #{bug_id} принят, +{points} баллов")
-    await log_admin(f"Баг #{bug_id} принят (не дубль) @{callback.from_user.username}, +{points} б.")
+    await callback.answer(f"Баг #{dn} принят, +{points} баллов")
+    await log_admin(f"Баг #{dn} принят (не дубль) @{callback.from_user.username}, +{points} б.")
 
 
 @router.callback_query(F.data.startswith("weeek:"))
@@ -949,4 +1052,3 @@ async def handle_weeek_board_legacy(callback: CallbackQuery):
     col_id = int(parts[3]) if len(parts) > 3 and parts[3] != "0" else None
 
     await _create_weeek_task_and_finish(callback, bug_id, board_id, col_id)
-

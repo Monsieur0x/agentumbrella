@@ -2,6 +2,7 @@
 Описание всех функций (tools) для Anthropic Claude function calling.
 ИИ видит эти описания и решает какую функцию вызвать.
 """
+import re
 
 
 # === ВСЕ ИНСТРУМЕНТЫ ===
@@ -10,7 +11,7 @@ ALL_TOOLS = [
     # --- АНАЛИТИКА ---
     {
         "name": "get_tester_stats",
-        "description": "Получить статистику конкретного тестера: баллы, баги, краши, игры, предупреждения. Вызывай когда спрашивают про конкретного человека.",
+        "description": "Получить статистику конкретного тестера: баллы, баги, игры, предупреждения. Вызывай когда спрашивают про конкретного человека.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -24,7 +25,7 @@ ALL_TOOLS = [
     },
     {
         "name": "get_team_stats",
-        "description": "Общая статистика команды за период: всего багов, крашей, игр, средние показатели, лучшие/худшие тестеры.",
+        "description": "Общая статистика команды за период: всего багов, игр, средние показатели, лучшие/худшие тестеры.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -76,8 +77,8 @@ ALL_TOOLS = [
                 },
                 "type": {
                     "type": "string",
-                    "enum": ["bug", "crash", "all"],
-                    "description": "Тип: bug, crash или all"
+                    "enum": ["bug", "all"],
+                    "description": "Тип: bug или all"
                 }
             },
             "required": ["period"]
@@ -193,7 +194,7 @@ ALL_TOOLS = [
     # --- РЕЙТИНГ ---
     {
         "name": "get_rating",
-        "description": "Получить рейтинг тестеров (баллы, баги, краши, игры). Возвращает данные БЕЗ публикации в группу. Используй когда спрашивают рейтинг, топ, список лучших.",
+        "description": "Получить рейтинг тестеров (баллы, баги, игры). Возвращает данные БЕЗ публикации в группу. Используй когда спрашивают рейтинг, топ, список лучших.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -329,7 +330,7 @@ TOOL_KEYWORDS: dict[str, list[str]] = {
     "get_team_stats":      [r"команд", r"общ\w+ стат", r"за\s+(сегодня|недел|месяц|всё)"],
     "get_inactive_testers":[r"неактивн", r"не работал", r"молчат", r"пропал"],
     "compare_testers":     [r"сравни"],
-    "get_bug_stats":       [r"баг", r"краш", r"стат\w*\s+баг", r"стат\w*\s+краш"],
+    "get_bug_stats":       [r"баг", r"стат\w*\s+баг"],
     "get_testers_list":    [r"список\s+тестер", r"кто в команд", r"тестер\w*", r"варн", r"сколько\s+тестер"],
     "award_points":        [r"начисл", r"списа", r"балл", r"@\w"],
     "award_points_bulk":   [r"начисл\w*\s+.*всем", r"всем\s+.*балл", r"массов"],
@@ -342,12 +343,18 @@ TOOL_KEYWORDS: dict[str, list[str]] = {
     "refresh_testers":     [r"обнови\s+(список|тестер)", r"синхрон", r"актуализ", r"обновить\s+(список|тестер)"],
     "manage_admin":        [r"админ", r"добав\w+\s+админ", r"удал\w+\s+админ"],
     "mark_bug_duplicate":  [r"дубл", r"дубликат", r"помет\w+\s+дубл"],
-    "search_bugs":         [r"найди\s+баг", r"поиск\s+баг", r"искать\s+баг", r"баг\w*\s+по", r"найди\s+краш", r"баг\s*#?\d+", r"покажи\s+баг", r"список\s+баг", r"баги\s+(от|тестер|по)", r"принят\w+\s+баг", r"отклон\w+\s+баг", r"все\s+баг"],
-    "delete_bug":          [r"удал\w*\s+баг", r"удал\w*\s+краш", r"убери\s+баг", r"снес\w*\s+баг", r"удал\w*\s+из\s+(бд|вик|weeek|базы)"],
+    "search_bugs":         [r"найди\s+баг", r"поиск\s+баг", r"искать\s+баг", r"баг\w*\s+по", r"баг\s*#?\d+", r"покажи\s+баг", r"список\s+баг", r"баги\s+(от|тестер|по)", r"принят\w+\s+баг", r"отклон\w+\s+баг", r"все\s+баг"],
+    "delete_bug":          [r"удал\w*\s+баг", r"убери\s+баг", r"снес\w*\s+баг", r"удал\w*\s+из\s+(бд|вик|weeek|базы)"],
     "switch_mode":         [r"режим", r"наблюдени", r"переключ\w*\s+режим", r"рабоч\w+\s+режим", r"observe"],
 }
 
 _TOOL_BY_NAME = {t["name"]: t for t in ALL_TOOLS}
+
+# Предкомпилированные regex для match_tools
+_TOOL_PATTERNS: dict[str, list[re.Pattern]] = {
+    name: [re.compile(kw) for kw in keywords]
+    for name, keywords in TOOL_KEYWORDS.items()
+}
 
 # Роли → запрещённые tools
 _ROLE_EXCLUDE: dict[str, set[str]] = {
@@ -369,15 +376,14 @@ def get_tools_for_role(role: str) -> list:
 
 def match_tools(text: str, role: str) -> list:
     """Возвращает только tools, чьи ключевые слова совпали с текстом."""
-    import re
     exclude = _ROLE_EXCLUDE.get(role, set())
     matched = set()
     text_lower = text.lower()
-    for tool_name, keywords in TOOL_KEYWORDS.items():
+    for tool_name, patterns in _TOOL_PATTERNS.items():
         if tool_name in exclude:
             continue
-        for kw in keywords:
-            if re.search(kw, text_lower):
+        for pat in patterns:
+            if pat.search(text_lower):
                 matched.add(tool_name)
                 break
     if not matched:

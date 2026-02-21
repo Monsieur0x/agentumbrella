@@ -61,3 +61,9 @@ async def get_all_admins() -> list[dict]:
     cursor = await db.execute("SELECT * FROM admins ORDER BY is_owner DESC, added_at")
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
+
+
+async def get_admin_ids() -> set[int]:
+    """Возвращает set telegram_id всех админов и владельца."""
+    admins = await get_all_admins()
+    return {a["telegram_id"] for a in admins}
