@@ -62,19 +62,41 @@ async def get_recent_bugs(limit: int = 50) -> list[dict]:
 
 
 async def delete_bug(bug_id: int) -> bool:
-    """Удаляет баг из БД. Возвращает True если удалён."""
+    """Удаляет баг из БД и декрементирует счётчик тестера (если баг был accepted). Возвращает True если удалён."""
     db = await get_db()
+    # Сначала проверяем, был ли баг accepted — только такие учитываются в total_bugs
+    cursor = await db.execute(
+        "SELECT tester_id, status FROM bugs WHERE id = ?", (bug_id,)
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return False
+
+    tester_id = row["tester_id"]
+    was_accepted = row["status"] == "accepted"
+
     cursor = await db.execute("DELETE FROM bugs WHERE id = ?", (bug_id,))
     await db.commit()
+
+    if was_accepted and cursor.rowcount > 0:
+        await db.execute(
+            "UPDATE testers SET total_bugs = CASE WHEN total_bugs - 1 < 0 THEN 0 ELSE total_bugs - 1 END WHERE telegram_id = ?",
+            (tester_id,)
+        )
+        await db.commit()
+
     return cursor.rowcount > 0
 
 
 async def delete_all_bugs() -> int:
-    """Удаляет все баги из БД. Возвращает количество удалённых."""
+    """Удаляет все баги из БД и обнуляет счётчики total_bugs у всех тестеров. Возвращает количество удалённых."""
     db = await get_db()
     cursor = await db.execute("DELETE FROM bugs")
+    count = cursor.rowcount
+    # Обнуляем кешированные счётчики багов у всех тестеров
+    await db.execute("UPDATE testers SET total_bugs = 0")
     await db.commit()
-    return cursor.rowcount
+    return count
 
 
 async def clear_weeek_task_id(bug_id: int):
