@@ -53,7 +53,8 @@ TOPIC_NAMES = {v: k for k, v in TOPIC_IDS.items() if v != 0}
 # === Баллы ===
 POINTS = {
     "bug_accepted": 3,      # Принятый баг
-    "game_played": 1,       # За каждую игру
+    "game_ap": 1,           # All Pick
+    "game_turbo": 1,        # Turbo
 }
 
 # === Модели Anthropic ===

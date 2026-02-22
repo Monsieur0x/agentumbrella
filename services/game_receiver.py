@@ -14,6 +14,12 @@ from utils.logger import log_info
 
 _runner: web.AppRunner | None = None
 
+# Маппинг gamemode_string из Lua → ключ в points config
+_GAMEMODE_POINTS_KEY = {
+    "DOTA_GAMEMODE_AP": "game_ap",
+    "DOTA_GAMEMODE_TURBO": "game_turbo",
+}
+
 
 async def _handle_game(request: web.Request) -> web.Response:
     """Обработчик POST / — принимает JSON от Lua-скрипта."""
@@ -41,9 +47,11 @@ async def _handle_game(request: web.Request) -> web.Response:
     if not tester:
         return web.json_response({"status": "tester_not_found"})
 
-    # Начислить баллы
+    # Начислить баллы (разные за разные режимы)
     points_config = await get_points_config()
-    points = points_config.get("game_played", 1)
+    gamemode = data.get("gamemode_string", "")
+    points_key = _GAMEMODE_POINTS_KEY.get(gamemode, "game_ap")
+    points = points_config.get(points_key, 1)
 
     await update_tester_points(telegram_id, points)
     await update_tester_stats(telegram_id, games=1)
