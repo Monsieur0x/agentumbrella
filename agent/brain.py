@@ -9,7 +9,7 @@ from collections import OrderedDict
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
 from agent.system_prompt import get_system_prompt, get_chat_prompt
-from agent.tools import get_tools_for_role
+from agent.tools import match_tools
 from agent.tool_executor import execute_tool
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -227,9 +227,11 @@ async def process_message(text: str, username: str, role: str, topic: str,
 
     messages = [msg.copy() for msg in history]
 
-    # 5. Инструменты — отдаём Claude все доступные для роли,
-    #    модель сама решает какой вызвать по контексту сообщения
-    tools = get_tools_for_role(role)
+    # 5. Инструменты — фильтруем по ключевым словам (экономия токенов)
+    tools = match_tools(text, role)
+    if not tools:
+        # Нет совпадений — вероятно болтовня, tools не нужны
+        tools = []
 
     try:
         kwargs = {
@@ -278,14 +280,16 @@ async def process_message(text: str, username: str, role: str, topic: str,
 
             messages.append({"role": "user", "content": tool_results})
 
-            response = await _call_claude(
-                model=model,
-                system=system_prompt,
-                messages=messages,
-                max_tokens=MAX_TOKENS,
-                tools=tools,
-                tool_choice={"type": "auto"},
-            )
+            cont_kwargs = {
+                "model": model,
+                "system": system_prompt,
+                "messages": messages,
+                "max_tokens": MAX_TOKENS,
+            }
+            if tools:
+                cont_kwargs["tools"] = tools
+                cont_kwargs["tool_choice"] = {"type": "auto"}
+            response = await _call_claude(**cont_kwargs)
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
         # Если инструмент сам отправил ответ — не дублируем
