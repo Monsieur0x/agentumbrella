@@ -18,10 +18,11 @@ import html
 from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from models.admin import is_admin, is_owner
-from models.bug import mark_duplicate, get_bug
+from models.bug import mark_duplicate, get_bug, update_bug
 from models.tester import update_tester_points, update_tester_stats
 from utils.logger import log_info, log_admin, get_bot
-from database import get_db
+from json_store import async_load, async_update, POINTS_LOG_FILE, TASKS_FILE
+from datetime import datetime
 
 router = Router()
 
@@ -29,6 +30,27 @@ router = Router()
 def _safe_html_text(callback: CallbackQuery) -> str:
     """Возвращает html_text сообщения, безопасный для конкатенации с HTML."""
     return callback.message.html_text or html.escape(callback.message.text or "")
+
+
+async def _add_points_log(tester_id: int, amount: int, reason: str, source: str = "manual", admin_id: int = None):
+    """Добавляет запись в лог баллов."""
+    def updater(data):
+        entry_id = data.get("next_id", 1)
+        data["next_id"] = entry_id + 1
+        if "items" not in data:
+            data["items"] = []
+        data["items"].append({
+            "id": entry_id,
+            "tester_id": tester_id,
+            "amount": amount,
+            "reason": reason,
+            "source": source,
+            "admin_id": admin_id,
+            "created_at": datetime.now().isoformat(),
+        })
+        return data
+
+    await async_update(POINTS_LOG_FILE, updater)
 
 
 # ─────────────────────────────────────────────
@@ -71,23 +93,12 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     points = bug["points_awarded"]
     dn = bug.get("display_number") or bug_id
 
-    db = await get_db()
-    await db.execute(
-        "UPDATE bugs SET status = 'accepted' WHERE id = ?", (bug_id,)
-    )
-    await db.commit()
-
+    await update_bug(bug_id, status="accepted")
     await update_tester_points(bug["tester_id"], points)
     await update_tester_stats(bug["tester_id"], bugs=1)
 
     # Запись в points_log
-    await db.execute(
-        "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
-        (bug["tester_id"], points,
-         f"Баг #{dn} принят",
-         "bug", admin_id)
-    )
-    await db.commit()
+    await _add_points_log(bug["tester_id"], points, f"Баг #{dn} принят", "bug", admin_id)
 
     # Уведомляем тестера в ЛС
     bot = get_bot()
@@ -153,11 +164,7 @@ async def handle_bug_skip_video(callback: CallbackQuery):
             await callback.answer("Не удалось отправить баг", show_alert=True)
     else:
         # Файла нет → ждём файл
-        db = await get_db()
-        await db.execute(
-            "UPDATE bugs SET status = 'waiting_file' WHERE id = ?", (bug_id,),
-        )
-        await db.commit()
+        await update_bug(bug_id, status="waiting_file")
         await callback.message.edit_text(
             f"📎 Отправь файл в этот топик — он прикрепится к багу <b>#{dn}</b>.",
             parse_mode="HTML", reply_markup=None,
@@ -188,11 +195,7 @@ async def handle_bug_skip_file(callback: CallbackQuery):
             await callback.answer("Не удалось отправить баг", show_alert=True)
     else:
         # Видео нет → ждём ссылку
-        db = await get_db()
-        await db.execute(
-            "UPDATE bugs SET status = 'waiting_video' WHERE id = ?", (bug_id,),
-        )
-        await db.commit()
+        await update_bug(bug_id, status="waiting_video")
         await callback.message.edit_text(
             f"🎥 Отправь ссылку на видео (YouTube) в этот топик — она прикрепится к багу <b>#{dn}</b>.",
             parse_mode="HTML", reply_markup=None,
@@ -276,9 +279,7 @@ async def handle_bug_reject(callback: CallbackQuery):
 
     dn = bug.get("display_number") or bug_id
 
-    db = await get_db()
-    await db.execute("UPDATE bugs SET status = 'rejected' WHERE id = ?", (bug_id,))
-    await db.commit()
+    await update_bug(bug_id, status="rejected")
 
     # Уведомляем тестера
     bot = get_bot()
@@ -452,12 +453,7 @@ async def _create_weeek_task_and_finish(
             except Exception:
                 pass
 
-        db = await get_db()
-        await db.execute(
-            "UPDATE bugs SET weeek_task_id = ?, weeek_board_name = ?, weeek_column_name = ? WHERE id = ?",
-            (task_id, board_name, col_name, bug_id),
-        )
-        await db.commit()
+        await update_bug(bug_id, weeek_task_id=task_id, weeek_board_name=board_name, weeek_column_name=col_name)
 
         # Прикрепляем файл из Telegram к задаче Weeek
         file_id = bug.get("file_id")
@@ -523,13 +519,11 @@ async def handle_task_publish(callback: CallbackQuery):
 
     task_id = int(callback.data.split(":")[1])
 
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-    task = await cursor.fetchone()
+    tasks_data = await async_load(TASKS_FILE)
+    task = tasks_data.get("items", {}).get(str(task_id))
     if not task:
         await callback.answer("Задание не найдено", show_alert=True)
         return
-    task = dict(task)
 
     if task.get("status") != "draft":
         await callback.answer("Задание уже обработано", show_alert=True)
@@ -557,18 +551,29 @@ async def handle_task_publish(callback: CallbackQuery):
                 text=message_text,
                 parse_mode="HTML",
             )
-            await db.execute(
-                "UPDATE tasks SET status = 'published', message_id = ? WHERE id = ?",
-                (msg.message_id, task_id)
-            )
-            await db.commit()
+
+            def update_published(data):
+                items = data.get("items", {})
+                key = str(task_id)
+                if key in items:
+                    items[key]["status"] = "published"
+                    items[key]["message_id"] = msg.message_id
+                return data
+
+            await async_update(TASKS_FILE, update_published)
             published = True
         except Exception as e:
             print(f"❌ Ошибка публикации задания: {e}")
 
     if not published:
-        await db.execute("UPDATE tasks SET status = 'published' WHERE id = ?", (task_id,))
-        await db.commit()
+        def update_status(data):
+            items = data.get("items", {})
+            key = str(task_id)
+            if key in items:
+                items[key]["status"] = "published"
+            return data
+
+        await async_update(TASKS_FILE, update_status)
 
     try:
         await callback.message.edit_text(
@@ -597,9 +602,14 @@ async def handle_task_cancel(callback: CallbackQuery):
 
     task_id = int(callback.data.split(":")[1])
 
-    db = await get_db()
-    await db.execute("UPDATE tasks SET status = 'cancelled' WHERE id = ?", (task_id,))
-    await db.commit()
+    def update_status(data):
+        items = data.get("items", {})
+        key = str(task_id)
+        if key in items:
+            items[key]["status"] = "cancelled"
+        return data
+
+    await async_update(TASKS_FILE, update_status)
 
     try:
         await callback.message.edit_text(

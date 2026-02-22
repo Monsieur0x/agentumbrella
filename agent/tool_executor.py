@@ -2,15 +2,16 @@
 Выполнение функций (tools) — связывает названия из ИИ с реальным кодом.
 """
 import json
+from datetime import datetime, timedelta
 from models.tester import (
     get_tester_by_username, get_all_testers, increment_warnings,
-    decrement_warnings, reset_warnings, reset_all_warnings
+    decrement_warnings, reset_warnings, reset_all_warnings, set_tester_active
 )
 from models.bug import get_bug, mark_duplicate, get_bug_stats, get_recent_bugs, delete_bug, delete_all_bugs, clear_weeek_task_id
 from models.admin import add_admin, remove_admin, get_all_admins, get_admin_ids
 from services.points_service import award_points, award_points_bulk
 from services.rating_service import get_rating
-from database import get_db
+from json_store import async_load, async_update, POINTS_LOG_FILE, WARNINGS_FILE, TESTERS_FILE, BUGS_FILE, TASKS_FILE
 from utils.logger import log_info, log_admin, get_bot
 from config import SEARCH_BUGS_LIMIT
 
@@ -257,23 +258,29 @@ async def _get_team_stats(period: str) -> dict:
 
     # Фильтрация баллов по периоду через points_log
     period_filter = {
-        "today": "-1 days",
-        "week": "-7 days",
-        "month": "-30 days",
+        "today": timedelta(days=1),
+        "week": timedelta(days=7),
+        "month": timedelta(days=30),
     }
 
     if period in period_filter:
-        db = await get_db()
-        cursor = await db.execute(
-            "SELECT tester_id, SUM(amount) as period_points FROM points_log "
-            "WHERE created_at >= datetime('now', ?) GROUP BY tester_id",
-            (period_filter[period],),
-        )
-        rows = await cursor.fetchall()
-        period_points_map = {r["tester_id"]: r["period_points"] for r in rows}
+        cutoff = datetime.now() - period_filter[period]
+        points_data = await async_load(POINTS_LOG_FILE)
+        items = points_data.get("items", [])
+
+        period_points_map = {}
+        for entry in items:
+            created = entry.get("created_at", "")
+            try:
+                dt = datetime.fromisoformat(created)
+            except (ValueError, TypeError):
+                continue
+            if dt >= cutoff:
+                tid = entry.get("tester_id")
+                period_points_map[tid] = period_points_map.get(tid, 0) + entry.get("amount", 0)
+
         total_points = sum(period_points_map.values())
 
-        # Для top-3 по периоду
         for t in testers:
             t["_period_points"] = period_points_map.get(t["telegram_id"], 0)
         testers_sorted = sorted(testers, key=lambda t: t["_period_points"], reverse=True)
@@ -301,27 +308,39 @@ async def _get_team_stats(period: str) -> dict:
 
 
 async def _get_inactive_testers(days: int) -> dict:
-    db = await get_db()
-    # Тестеры, у которых нет записей в points_log за N дней
-    cursor = await db.execute("""
-        SELECT t.username, t.full_name, t.total_points,
-               MAX(pl.created_at) as last_activity
-        FROM testers t
-        LEFT JOIN points_log pl ON t.telegram_id = pl.tester_id
-        WHERE t.is_active = 1
-        GROUP BY t.telegram_id
-        HAVING last_activity IS NULL
-            OR last_activity < datetime('now', ? || ' days')
-    """, (f"-{days}",))
-    rows = await cursor.fetchall()
+    """Тестеры без активности за N дней."""
+    cutoff = datetime.now() - timedelta(days=days)
+    testers = await get_all_testers(active_only=True)
+    points_data = await async_load(POINTS_LOG_FILE)
+    items = points_data.get("items", [])
+
+    # Находим последнюю активность каждого тестера
+    last_activity = {}
+    for entry in items:
+        tid = entry.get("tester_id")
+        created = entry.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created)
+        except (ValueError, TypeError):
+            continue
+        if tid not in last_activity or dt > last_activity[tid]:
+            last_activity[tid] = dt
+
+    inactive = []
+    for t in testers:
+        tid = t["telegram_id"]
+        la = last_activity.get(tid)
+        if la is None or la < cutoff:
+            inactive.append({
+                "username": _tag(t["username"]),
+                "full_name": t["full_name"],
+                "last_activity": la.isoformat() if la else None,
+            })
+
     return {
         "days": days,
-        "inactive_count": len(rows),
-        "testers": [
-            {"username": _tag(r["username"]), "full_name": r["full_name"],
-             "last_activity": r["last_activity"]}
-            for r in rows
-        ]
+        "inactive_count": len(inactive),
+        "testers": inactive,
     }
 
 
@@ -356,23 +375,29 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
 
     new_count = await increment_warnings(tester["telegram_id"])
 
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO warnings (tester_id, reason, admin_id) VALUES (?, ?, ?)",
-        (tester["telegram_id"], reason, admin_id)
-    )
-    await db.commit()
+    # Запись в warnings
+    def add_warning(data):
+        entry_id = data.get("next_id", 1)
+        data["next_id"] = entry_id + 1
+        if "items" not in data:
+            data["items"] = []
+        data["items"].append({
+            "id": entry_id,
+            "tester_id": tester["telegram_id"],
+            "reason": reason,
+            "admin_id": admin_id,
+            "created_at": datetime.now().isoformat(),
+        })
+        return data
+
+    await async_update(WARNINGS_FILE, add_warning)
 
     await log_admin(f"Предупреждение @{tester['username']}: {reason} ({new_count}/3)")
 
     # Деактивация при 3 предупреждениях
     deactivated = False
     if new_count >= 3:
-        await db.execute(
-            "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
-            (tester["telegram_id"],)
-        )
-        await db.commit()
+        await set_tester_active(tester["telegram_id"], False)
         deactivated = True
         await log_admin(f"Тестер @{tester['username']} деактивирован (3/3 предупреждений)")
 
@@ -443,10 +468,11 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
     # === Снять у всех ===
     if usernames.lower() == "all":
         affected = await reset_all_warnings()
-        # Удаляем записи из таблицы warnings
-        db = await get_db()
-        await db.execute("DELETE FROM warnings")
-        await db.commit()
+        # Удаляем все записи из warnings
+        def clear_all(data):
+            data["items"] = []
+            return data
+        await async_update(WARNINGS_FILE, clear_all)
         await log_admin(f"Сброшены все варны ({affected} тестеров)")
         return {
             "success": True,
@@ -471,32 +497,31 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
             results.append({"username": _tag(tester["username"]), "warnings": 0, "skipped": True})
             continue
 
-        db = await get_db()
-
         # amount=0 означает сбросить все варны
         if amount == 0:
             new_count = await reset_warnings(tester["telegram_id"])
             # Удаляем все записи варнов тестера
-            await db.execute("DELETE FROM warnings WHERE tester_id = ?", (tester["telegram_id"],))
-            await db.commit()
+            def remove_all_for_tester(data, tid=tester["telegram_id"]):
+                data["items"] = [w for w in data.get("items", []) if w.get("tester_id") != tid]
+                return data
+            await async_update(WARNINGS_FILE, remove_all_for_tester)
         else:
             new_count = await decrement_warnings(tester["telegram_id"], amount)
             # Удаляем последние N записей варнов
-            await db.execute(
-                "DELETE FROM warnings WHERE id IN ("
-                "  SELECT id FROM warnings WHERE tester_id = ? ORDER BY created_at DESC LIMIT ?"
-                ")",
-                (tester["telegram_id"], amount)
-            )
-            await db.commit()
+            def remove_last_n(data, tid=tester["telegram_id"], n=amount):
+                items = data.get("items", [])
+                # Находим варны этого тестера
+                tester_warnings = [(i, w) for i, w in enumerate(items) if w.get("tester_id") == tid]
+                # Сортируем по дате, берём последние N
+                tester_warnings.sort(key=lambda x: x[1].get("created_at", ""), reverse=True)
+                indices_to_remove = {idx for idx, _ in tester_warnings[:n]}
+                data["items"] = [w for i, w in enumerate(items) if i not in indices_to_remove]
+                return data
+            await async_update(WARNINGS_FILE, remove_last_n)
 
         # Реактивируем если был деактивирован по варнам и теперь < 3
         if not tester["is_active"] and new_count < 3:
-            await db.execute(
-                "UPDATE testers SET is_active = 1 WHERE telegram_id = ?",
-                (tester["telegram_id"],)
-            )
-            await db.commit()
+            await set_tester_active(tester["telegram_id"], True)
 
         await log_admin(f"Снят варн @{tester['username']}: {old_count} → {new_count}")
 
@@ -572,14 +597,28 @@ async def _create_task(brief: str, admin_id: int) -> dict:
     except Exception as e:
         print(f"⚠️ Не удалось расширить задание: {e}")
 
-    # Сохраняем в базу как черновик
-    db = await get_db()
-    cursor = await db.execute(
-        "INSERT INTO tasks (admin_id, brief, full_text, status) VALUES (?, ?, ?, 'draft')",
-        (admin_id, brief, full_text)
-    )
-    await db.commit()
-    task_id = cursor.lastrowid
+    # Сохраняем как черновик
+    result = {}
+
+    def create(data):
+        task_id = data.get("next_id", 1)
+        data["next_id"] = task_id + 1
+        if "items" not in data:
+            data["items"] = {}
+        data["items"][str(task_id)] = {
+            "id": task_id,
+            "admin_id": admin_id,
+            "brief": brief,
+            "full_text": full_text,
+            "message_id": None,
+            "status": "draft",
+            "created_at": datetime.now().isoformat(),
+        }
+        result["task_id"] = task_id
+        return data
+
+    await async_update(TASKS_FILE, create)
+    task_id = result["task_id"]
 
     # Отправляем превью админу на подтверждение
     bot = get_bot()
@@ -676,12 +715,7 @@ async def _refresh_testers() -> dict:
         try:
             member = await bot.get_chat_member(GROUP_ID, t["telegram_id"])
             if member.status in ("left", "kicked"):
-                db = await get_db()
-                await db.execute(
-                    "UPDATE testers SET is_active = 0 WHERE telegram_id = ?",
-                    (t["telegram_id"],)
-                )
-                await db.commit()
+                await set_tester_active(t["telegram_id"], False)
                 deactivated.append(_tag(t["username"]) or t["full_name"])
             else:
                 still_active.append(_tag(t["username"]) or t["full_name"])
@@ -702,61 +736,61 @@ async def _refresh_testers() -> dict:
 
 async def _search_bugs(query: str = None, tester: str = None,
                        bug_id: int = None, status: str = None) -> dict:
-    db = await get_db()
+    bugs_data = await async_load(BUGS_FILE)
+    items = bugs_data.get("items", {})
+    testers_data = await async_load(TESTERS_FILE)
 
     # Поиск по конкретному ID
     if bug_id:
-        sql = """SELECT b.*, t.username
-                 FROM bugs b
-                 JOIN testers t ON b.tester_id = t.telegram_id
-                 WHERE b.id = ?"""
-        cursor = await db.execute(sql, (bug_id,))
-        row = await cursor.fetchone()
-        if not row:
+        bug = items.get(str(bug_id))
+        if not bug:
             return {"error": f"Баг #{bug_id} не найден"}
-        bug = dict(row)
-        if bug.get("username"):
-            bug["username"] = _tag(bug["username"])
+        bug = dict(bug)
+        tid_key = str(bug.get("tester_id", ""))
+        t = testers_data.get(tid_key, {})
+        if t.get("username"):
+            bug["username"] = _tag(t["username"])
         return {"count": 1, "bugs": [bug]}
 
     # Поиск по фильтрам
-    sql = """SELECT b.id, b.display_number, b.title, b.type, b.status, b.created_at,
-                    b.script_name, b.youtube_link,
-                    b.weeek_task_id, b.weeek_board_name, b.weeek_column_name,
-                    t.username
-             FROM bugs b
-             JOIN testers t ON b.tester_id = t.telegram_id
-             WHERE 1=1"""
-    params = []
+    results = []
+    for b in items.values():
+        # Фильтр по статусу
+        if status and status != "all" and b.get("status") != status:
+            continue
 
-    if query:
-        sql += " AND (b.title LIKE ? OR b.description LIKE ? OR b.script_name LIKE ?)"
-        params.extend([f"%{query}%", f"%{query}%", f"%{query}%"])
+        # Фильтр по тестеру
+        if tester:
+            tid_key = str(b.get("tester_id", ""))
+            t = testers_data.get(tid_key, {})
+            if not t.get("username") or t["username"].lower() != _normalize_username(tester).lower():
+                continue
 
-    if tester:
-        sql += " AND LOWER(t.username) = LOWER(?)"
-        params.append(_normalize_username(tester))
+        # Фильтр по тексту
+        if query:
+            q = query.lower()
+            title = (b.get("title") or "").lower()
+            desc = (b.get("description") or "").lower()
+            script = (b.get("script_name") or "").lower()
+            if q not in title and q not in desc and q not in script:
+                continue
 
-    if status and status != "all":
-        sql += " AND b.status = ?"
-        params.append(status)
+        bug = dict(b)
+        tid_key = str(bug.get("tester_id", ""))
+        t = testers_data.get(tid_key, {})
+        if t.get("username"):
+            bug["username"] = _tag(t["username"])
+        results.append(bug)
 
-    sql += " ORDER BY b.id DESC LIMIT ?"
-    params.append(SEARCH_BUGS_LIMIT)
-    cursor = await db.execute(sql, params)
-    rows = await cursor.fetchall()
-    bugs = []
-    for r in rows:
-        bug = dict(r)
-        if bug.get("username"):
-            bug["username"] = _tag(bug["username"])
-        bugs.append(bug)
+    results.sort(key=lambda b: b.get("id", 0), reverse=True)
+    results = results[:SEARCH_BUGS_LIMIT]
+
     return {
         "query": query or "",
         "tester": tester or "",
         "status": status or "all",
-        "count": len(bugs),
-        "bugs": bugs
+        "count": len(results),
+        "bugs": results,
     }
 
 
@@ -772,17 +806,16 @@ async def _delete_bug(bug_id: int = None, target: str = "both",
             return {"success": True, "deleted_count": count, "target": "db_only"}
         elif target in ("weeek_only", "both"):
             # Сначала удаляем из Weeek все баги у которых есть weeek_task_id
-            db = await get_db()
-            cursor = await db.execute(
-                "SELECT id, weeek_task_id FROM bugs WHERE weeek_task_id IS NOT NULL AND weeek_task_id != ''"
-            )
-            rows = await cursor.fetchall()
+            bugs_data = await async_load(BUGS_FILE)
+            items = bugs_data.get("items", {})
+            weeek_bugs = [b for b in items.values()
+                          if b.get("weeek_task_id")]
             weeek_deleted = 0
             weeek_errors = 0
-            if rows:
+            if weeek_bugs:
                 from services.weeek_service import delete_task as weeek_delete
-                for row in rows:
-                    r = await weeek_delete(str(row["weeek_task_id"]))
+                for b in weeek_bugs:
+                    r = await weeek_delete(str(b["weeek_task_id"]))
                     if r.get("success"):
                         weeek_deleted += 1
                     else:
@@ -801,10 +834,13 @@ async def _delete_bug(bug_id: int = None, target: str = "both",
                 await log_info(f"Удалены все баги: БД ({count}), Weeek ({weeek_deleted})")
             else:
                 # weeek_only — очищаем ссылки
-                await db.execute(
-                    "UPDATE bugs SET weeek_task_id = NULL, weeek_board_name = NULL, weeek_column_name = NULL"
-                )
-                await db.commit()
+                def clear_weeek(data):
+                    for key in data.get("items", {}):
+                        data["items"][key]["weeek_task_id"] = None
+                        data["items"][key]["weeek_board_name"] = None
+                        data["items"][key]["weeek_column_name"] = None
+                    return data
+                await async_update(BUGS_FILE, clear_weeek)
                 await log_info(f"Удалены все баги из Weeek ({weeek_deleted})")
             return result
 

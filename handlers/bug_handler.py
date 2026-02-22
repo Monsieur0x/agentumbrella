@@ -7,11 +7,10 @@
 import re
 import html
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from models.tester import get_or_create_tester
-from models.bug import create_bug, get_bug
+from models.tester import get_or_create_tester, get_tester_by_id
+from models.bug import create_bug, get_bug, update_bug
 from config import OWNER_TELEGRAM_ID
 from utils.logger import log_info
-from database import get_db
 
 YOUTUBE_RE = re.compile(
     r'https?://(?:www\.)?(?:youtube\.com/(?:watch\?[^\s]*v=[\w-]+|shorts/[\w-]+)|youtu\.be/[\w-]+)',
@@ -190,12 +189,7 @@ async def handle_file_followup(message: Message, bug_id: int):
         return
 
     # Обновляем баг — прикрепляем файл
-    db = await get_db()
-    await db.execute(
-        "UPDATE bugs SET file_id = ?, file_type = ?, status = 'pending' WHERE id = ?",
-        (file_id, file_type, bug_id),
-    )
-    await db.commit()
+    await update_bug(bug_id, file_id=file_id, file_type=file_type, status="pending")
 
     user = message.from_user
     username = user.username or user.full_name or str(user.id)
@@ -228,12 +222,7 @@ async def handle_video_followup(message: Message, bug_id: int):
         return
 
     # Обновляем баг — прикрепляем видео
-    db = await get_db()
-    await db.execute(
-        "UPDATE bugs SET youtube_link = ?, status = 'pending' WHERE id = ?",
-        (youtube_link, bug_id),
-    )
-    await db.commit()
+    await update_bug(bug_id, youtube_link=youtube_link, status="pending")
 
     user = message.from_user
     username = user.username or user.full_name or str(user.id)
@@ -259,20 +248,12 @@ async def submit_bug_as_is(bug_id: int):
     if not bug or bug["status"] != "waiting_media":
         return False
 
-    db = await get_db()
-    await db.execute(
-        "UPDATE bugs SET status = 'pending' WHERE id = ?", (bug_id,),
-    )
-    await db.commit()
+    await update_bug(bug_id, status="pending")
 
     # Ищем username тестера
-    cursor = await db.execute(
-        "SELECT username, full_name FROM testers WHERE telegram_id = ?",
-        (bug["tester_id"],),
-    )
-    row = await cursor.fetchone()
-    username = (dict(row).get("username") or dict(row).get("full_name") or
-                str(bug["tester_id"])) if row else str(bug["tester_id"])
+    tester = await get_tester_by_id(bug["tester_id"])
+    username = (tester.get("username") or tester.get("full_name") or
+                str(bug["tester_id"])) if tester else str(bug["tester_id"])
 
     display_number = bug.get("display_number") or bug_id
 

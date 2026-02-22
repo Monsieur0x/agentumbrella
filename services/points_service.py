@@ -1,7 +1,8 @@
 """
 Сервис для работы с баллами.
 """
-from database import get_db
+from datetime import datetime
+from json_store import async_update, POINTS_LOG_FILE
 from models.tester import update_tester_points, get_tester_by_username, get_all_testers
 
 
@@ -17,12 +18,23 @@ async def award_points(username: str, amount: int, reason: str, admin_id: int = 
     new_total = await update_tester_points(tester["telegram_id"], amount)
 
     # Записываем в лог баллов
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO points_log (tester_id, amount, reason, source, admin_id) VALUES (?, ?, ?, ?, ?)",
-        (tester["telegram_id"], amount, reason, source, admin_id)
-    )
-    await db.commit()
+    def add_log(data):
+        entry_id = data.get("next_id", 1)
+        data["next_id"] = entry_id + 1
+        if "items" not in data:
+            data["items"] = []
+        data["items"].append({
+            "id": entry_id,
+            "tester_id": tester["telegram_id"],
+            "amount": amount,
+            "reason": reason,
+            "source": source,
+            "admin_id": admin_id,
+            "created_at": datetime.now().isoformat(),
+        })
+        return data
+
+    await async_update(POINTS_LOG_FILE, add_log)
 
     return {
         "success": True,

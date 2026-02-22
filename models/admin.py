@@ -1,30 +1,37 @@
 """
-CRUD-операции с администраторами.
+CRUD-операции с администраторами (JSON-хранилище).
 """
-from database import get_db
+from datetime import datetime
+from json_store import async_load, async_save, async_update, ADMINS_FILE
 from config import OWNER_TELEGRAM_ID
 
 
 async def init_owner():
-    """Добавляет владельца в таблицу админов при старте."""
+    """Добавляет владельца в JSON при старте."""
     if not OWNER_TELEGRAM_ID:
         return
-    db = await get_db()
-    await db.execute(
-        """INSERT OR IGNORE INTO admins (telegram_id, is_owner)
-           VALUES (?, 1)""",
-        (OWNER_TELEGRAM_ID,)
-    )
-    await db.commit()
+    key = str(OWNER_TELEGRAM_ID)
+
+    def updater(data):
+        if key not in data:
+            data[key] = {
+                "telegram_id": OWNER_TELEGRAM_ID,
+                "username": None,
+                "full_name": None,
+                "is_owner": True,
+                "added_at": datetime.now().isoformat(),
+            }
+        else:
+            data[key]["is_owner"] = True
+        return data
+
+    await async_update(ADMINS_FILE, updater)
 
 
 async def is_admin(telegram_id: int) -> bool:
-    """Проверяет наличие в таблице admins. Возвращает True и для владельца (он тоже в admins)."""
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT 1 FROM admins WHERE telegram_id = ?", (telegram_id,)
-    )
-    return await cursor.fetchone() is not None
+    """Проверяет наличие в admins. Возвращает True и для владельца."""
+    data = await async_load(ADMINS_FILE)
+    return str(telegram_id) in data
 
 
 async def is_owner(telegram_id: int) -> bool:
@@ -33,37 +40,43 @@ async def is_owner(telegram_id: int) -> bool:
 
 async def add_admin(telegram_id: int, username: str = None, full_name: str = None) -> bool:
     """Добавляет админа. Возвращает True если успешно."""
-    db = await get_db()
-    try:
-        await db.execute(
-            "INSERT OR IGNORE INTO admins (telegram_id, username, full_name) VALUES (?, ?, ?)",
-            (telegram_id, username, full_name)
-        )
-        await db.commit()
-        return True
-    except Exception:
-        return False
+    key = str(telegram_id)
+
+    def updater(data):
+        if key not in data:
+            data[key] = {
+                "telegram_id": telegram_id,
+                "username": username,
+                "full_name": full_name,
+                "is_owner": False,
+                "added_at": datetime.now().isoformat(),
+            }
+        return data
+
+    await async_update(ADMINS_FILE, updater)
+    return True
 
 
 async def remove_admin(telegram_id: int) -> bool:
     if telegram_id == OWNER_TELEGRAM_ID:
-        return False  # Нельзя удалить владельца
-    db = await get_db()
-    cursor = await db.execute(
-        "DELETE FROM admins WHERE telegram_id = ? AND is_owner = 0", (telegram_id,)
-    )
-    await db.commit()
-    return cursor.rowcount > 0
+        return False
+    key = str(telegram_id)
+    data = await async_load(ADMINS_FILE)
+    if key in data and not data[key].get("is_owner", False):
+        del data[key]
+        await async_save(ADMINS_FILE, data)
+        return True
+    return False
 
 
 async def get_all_admins() -> list[dict]:
-    db = await get_db()
-    cursor = await db.execute("SELECT * FROM admins ORDER BY is_owner DESC, added_at")
-    rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
+    data = await async_load(ADMINS_FILE)
+    admins = list(data.values())
+    admins.sort(key=lambda a: (not a.get("is_owner", False), a.get("added_at", "")))
+    return [dict(a) for a in admins]
 
 
 async def get_admin_ids() -> set[int]:
     """Возвращает set telegram_id всех админов и владельца."""
-    admins = await get_all_admins()
-    return {a["telegram_id"] for a in admins}
+    data = await async_load(ADMINS_FILE)
+    return {v["telegram_id"] for v in data.values()}

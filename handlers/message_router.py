@@ -4,14 +4,16 @@
 Это главный обработчик всех входящих сообщений.
 """
 import time
+import html
 from aiogram import Router, F, Bot
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import GROUP_ID, TOPIC_NAMES, DEBUG_TOPICS, OBSERVE_REPLY
 from models.admin import is_admin, is_owner
 from models.tester import get_or_create_tester, get_tester_by_id
 from agent.brain import process_message, process_chat_message
 from services.rating_service import get_rating, format_rating_message
 from utils.logger import log_info
+from json_store import async_load, async_update, BUGS_FILE, TASKS_FILE
 
 router = Router()
 
@@ -167,31 +169,30 @@ async def handle_group_message(message: Message, bot: Bot):
     # Топик «Баги» → #баг, файл для ожидающего бага, или видео-ссылка
     if topic == "bugs":
         from handlers.bug_handler import handle_bug_report, handle_file_followup, handle_video_followup
-        from database import get_db
-        db = await get_db()
 
         file_present = bool(message.document or message.video or message.photo or message.video_note)
 
         # Проверяем: может тестер присылает файл для бага в статусе waiting_file
         if file_present:
-            cursor = await db.execute(
-                "SELECT id FROM bugs WHERE tester_id = ? AND status = 'waiting_file' ORDER BY id DESC LIMIT 1",
-                (user.id,),
-            )
-            row = await cursor.fetchone()
-            if row:
-                await handle_file_followup(message, dict(row)["id"])
+            bugs_data = await async_load(BUGS_FILE)
+            items = bugs_data.get("items", {})
+            # Ищем последний баг тестера в статусе waiting_file
+            waiting = [b for b in items.values()
+                       if b.get("tester_id") == user.id and b.get("status") == "waiting_file"]
+            if waiting:
+                waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
+                await handle_file_followup(message, waiting[0]["id"])
                 return
 
         # Проверяем: может тестер присылает видео-ссылку для бага в статусе waiting_video
         if not has_hashtag_bug:
-            cursor = await db.execute(
-                "SELECT id FROM bugs WHERE tester_id = ? AND status = 'waiting_video' ORDER BY id DESC LIMIT 1",
-                (user.id,),
-            )
-            row = await cursor.fetchone()
-            if row:
-                await handle_video_followup(message, dict(row)["id"])
+            bugs_data = await async_load(BUGS_FILE)
+            items = bugs_data.get("items", {})
+            waiting = [b for b in items.values()
+                       if b.get("tester_id") == user.id and b.get("status") == "waiting_video"]
+            if waiting:
+                waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
+                await handle_video_followup(message, waiting[0]["id"])
                 return
 
         if has_hashtag_bug:
@@ -271,28 +272,27 @@ async def handle_group_message(message: Message, bot: Bot):
 
 async def _handle_draft_task_edit(message: Message, user) -> bool:
     """Если у админа/владельца есть черновик задания, воспринимаем текст как редактирование.
-    Работает только в ЛС — в группе редактирование черновиков не поддерживается."""
-    from database import get_db
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    import html
+    Работает только в ЛС — в группе редактирование черновиков не оддерживается."""
+    tasks_data = await async_load(TASKS_FILE)
+    items = tasks_data.get("items", {})
 
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT id FROM tasks WHERE admin_id = ? AND status = 'draft' ORDER BY id DESC LIMIT 1",
-        (user.id,)
-    )
-    row = await cursor.fetchone()
-    if not row:
+    # Ищем последний черновик этого админа
+    drafts = [t for t in items.values()
+              if t.get("admin_id") == user.id and t.get("status") == "draft"]
+    if not drafts:
         return False
 
-    task_id = row[0]
+    drafts.sort(key=lambda t: t.get("id", 0), reverse=True)
+    task_id = drafts[0]["id"]
     new_text = message.text
 
-    await db.execute(
-        "UPDATE tasks SET full_text = ? WHERE id = ?",
-        (new_text, task_id)
-    )
-    await db.commit()
+    def updater(data):
+        key = str(task_id)
+        if key in data.get("items", {}):
+            data["items"][key]["full_text"] = new_text
+        return data
+
+    await async_update(TASKS_FILE, updater)
 
     safe_text = html.escape(new_text)
     preview_text = (

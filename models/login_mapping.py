@@ -1,68 +1,61 @@
 """
-CRUD для таблицы login_mapping — связь игровых логинов с Telegram ID.
+CRUD для привязки игровых логинов к Telegram ID (JSON-хранилище).
 """
-from database import get_db
+from datetime import datetime
+from json_store import async_load, async_save, async_update, LOGIN_MAPPING_FILE, PROCESSED_MATCHES_FILE
 
 
 async def link_login(login: str, telegram_id: int):
     """Привязать игровой логин к тестеру (перезаписывает если уже есть)."""
-    db = await get_db()
-    await db.execute(
-        "INSERT OR REPLACE INTO login_mapping (login, telegram_id) VALUES (?, ?)",
-        (login, telegram_id)
-    )
-    await db.commit()
+    def updater(data):
+        data[login] = telegram_id
+        return data
+
+    await async_update(LOGIN_MAPPING_FILE, updater)
 
 
 async def unlink_login(login: str):
     """Отвязать игровой логин."""
-    db = await get_db()
-    await db.execute("DELETE FROM login_mapping WHERE login = ?", (login,))
-    await db.commit()
+    data = await async_load(LOGIN_MAPPING_FILE)
+    if login in data:
+        del data[login]
+        await async_save(LOGIN_MAPPING_FILE, data)
 
 
 async def get_telegram_id_by_login(login: str) -> int | None:
     """Найти telegram_id по игровому логину."""
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT telegram_id FROM login_mapping WHERE login = ?", (login,)
-    )
-    row = await cursor.fetchone()
-    return row["telegram_id"] if row else None
+    data = await async_load(LOGIN_MAPPING_FILE)
+    tid = data.get(login)
+    return int(tid) if tid is not None else None
 
 
 async def get_login_by_telegram_id(telegram_id: int) -> str | None:
     """Найти игровой логин по telegram_id."""
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT login FROM login_mapping WHERE telegram_id = ?", (telegram_id,)
-    )
-    row = await cursor.fetchone()
-    return row["login"] if row else None
+    data = await async_load(LOGIN_MAPPING_FILE)
+    for login, tid in data.items():
+        if int(tid) == telegram_id:
+            return login
+    return None
 
 
 async def get_all_logins() -> list[dict]:
     """Все привязки логинов: [{login, telegram_id}, ...]."""
-    db = await get_db()
-    cursor = await db.execute("SELECT login, telegram_id FROM login_mapping ORDER BY login")
-    rows = await cursor.fetchall()
-    return [dict(r) for r in rows]
+    data = await async_load(LOGIN_MAPPING_FILE)
+    result = [{"login": k, "telegram_id": int(v)} for k, v in data.items()]
+    result.sort(key=lambda x: x["login"])
+    return result
 
 
 async def is_match_processed(match_id: int) -> bool:
     """Проверить, был ли матч уже обработан."""
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT 1 FROM processed_matches WHERE match_id = ?", (match_id,)
-    )
-    return await cursor.fetchone() is not None
+    data = await async_load(PROCESSED_MATCHES_FILE)
+    return str(match_id) in data
 
 
 async def mark_match_processed(match_id: int):
     """Пометить матч как обработанный."""
-    db = await get_db()
-    await db.execute(
-        "INSERT OR IGNORE INTO processed_matches (match_id) VALUES (?)",
-        (match_id,)
-    )
-    await db.commit()
+    def updater(data):
+        data[str(match_id)] = datetime.now().isoformat()
+        return data
+
+    await async_update(PROCESSED_MATCHES_FILE, updater)

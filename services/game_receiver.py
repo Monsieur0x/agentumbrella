@@ -4,11 +4,12 @@ HTTP-сервер для приёма данных об играх от Lua-ск
 """
 import json
 from aiohttp import web
+from datetime import datetime
 
 from models.login_mapping import get_telegram_id_by_login, is_match_processed, mark_match_processed
 from models.tester import get_tester_by_id, update_tester_stats, update_tester_points
 from models.settings import get_points_config
-from database import get_db
+from json_store import async_update, POINTS_LOG_FILE
 from utils.logger import log_info
 
 
@@ -57,12 +58,23 @@ async def _handle_game(request: web.Request) -> web.Response:
     await update_tester_stats(telegram_id, games=1)
 
     # Лог в points_log
-    db = await get_db()
-    await db.execute(
-        "INSERT INTO points_log (tester_id, amount, reason, source) VALUES (?, ?, ?, ?)",
-        (telegram_id, points, f"Игра #{match_id}", "game")
-    )
-    await db.commit()
+    def add_log(pdata):
+        entry_id = pdata.get("next_id", 1)
+        pdata["next_id"] = entry_id + 1
+        if "items" not in pdata:
+            pdata["items"] = []
+        pdata["items"].append({
+            "id": entry_id,
+            "tester_id": telegram_id,
+            "amount": points,
+            "reason": f"Игра #{match_id}",
+            "source": "game",
+            "admin_id": None,
+            "created_at": datetime.now().isoformat(),
+        })
+        return pdata
+
+    await async_update(POINTS_LOG_FILE, add_log)
 
     # Пометить матч обработанным
     await mark_match_processed(match_id)
