@@ -41,6 +41,14 @@ async def get_login_by_telegram_id(telegram_id: int) -> str | None:
     return row["login"] if row else None
 
 
+async def get_all_logins() -> list[dict]:
+    """Все привязки логинов: [{login, telegram_id}, ...]."""
+    db = await get_db()
+    cursor = await db.execute("SELECT login, telegram_id FROM login_mapping ORDER BY login")
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def is_match_processed(match_id: int) -> bool:
     """Проверить, был ли матч уже обработан."""
     db = await get_db()

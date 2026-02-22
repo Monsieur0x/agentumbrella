@@ -45,7 +45,7 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: 
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 
-_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers", "link_login"}
+_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers", "link_login", "get_logins_list"}
 _OWNER_TOOLS = {"manage_admin", "switch_mode"}
 
 
@@ -202,6 +202,9 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 
     elif name == "link_login":
         return await _link_login(args["action"], args["login"], args.get("username"))
+
+    elif name == "get_logins_list":
+        return await _get_logins_list()
 
     elif name == "switch_mode":
         return await _switch_mode(args["mode"])
@@ -871,6 +874,35 @@ async def _link_login(action: str, login: str, username: str = None) -> dict:
         return {"success": True, "login": login, "unlinked": True}
 
     return {"error": f"Неизвестное действие: {action}"}
+
+
+async def _get_logins_list() -> dict:
+    """Список привязанных логинов и тестеров без привязки."""
+    from models.login_mapping import get_all_logins
+
+    logins = await get_all_logins()
+    testers = await get_all_testers(active_only=True)
+
+    # Тестеры с привязкой
+    linked_tids = {entry["telegram_id"] for entry in logins}
+    linked = []
+    for entry in logins:
+        tester = next((t for t in testers if t["telegram_id"] == entry["telegram_id"]), None)
+        uname = _tag(tester["username"]) if tester and tester.get("username") else f"ID {entry['telegram_id']}"
+        linked.append({"login": entry["login"], "tester": uname})
+
+    # Активные тестеры без привязки
+    unlinked = []
+    for t in testers:
+        if t["telegram_id"] not in linked_tids:
+            unlinked.append(_tag(t["username"]) if t.get("username") else f"ID {t['telegram_id']}")
+
+    return {
+        "linked": linked,
+        "linked_count": len(linked),
+        "unlinked_testers": unlinked,
+        "unlinked_count": len(unlinked),
+    }
 
 
 async def _switch_mode(mode: str) -> dict:

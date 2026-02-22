@@ -38,7 +38,13 @@ local function sendinfo()
         data = JSON:encode(info),
     }, function() end, "sendinfo")
 end
-sendinfo() -- для тестов без чеков +на релоаде, а не по окончанию игры
+--sendinfo() -- для тестов без чеков +на релоаде, а не по окончанию игры
+
+local allowed_gamemodes = {
+    [Enum.GameMode.DOTA_GAMEMODE_AP] = true,
+    [Enum.GameMode.DOTA_GAMEMODE_TURBO] = true,
+    [Enum.GameMode.DOTA_GAMEMODE_SD] = true
+}
 
 return {
     OnGameEnd = function()
