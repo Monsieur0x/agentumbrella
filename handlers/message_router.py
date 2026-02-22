@@ -425,7 +425,8 @@ async def _handle_pending_reward_input(message: Message, user) -> bool:
 
     labels = {
         "bug_accepted": "🐛 Баг",
-        "game_played": "🎮 Игра",
+        "game_ap": "🎮 All Pick",
+        "game_turbo": "🎮 Turbo",
     }
     label = labels.get(reward_type, reward_type)
     await message.answer(

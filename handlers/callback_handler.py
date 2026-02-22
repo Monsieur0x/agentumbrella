@@ -693,7 +693,8 @@ async def handle_rating_cancel(callback: CallbackQuery):
 
 _REWARD_LABELS = {
     "bug_accepted": "🐛 Баг",
-    "game_played": "🎮 Игра",
+    "game_ap": "🎮 All Pick",
+    "game_turbo": "🎮 Turbo",
 }
 
 
@@ -703,12 +704,14 @@ def build_rewards_menu(pts: dict) -> tuple[str, InlineKeyboardMarkup]:
         "⚙️ <b>Настройка наград</b>\n\n"
         "Текущие значения:\n"
         f"🐛 Баг: <b>{pts['bug_accepted']}</b> б.\n"
-        f"🎮 Игра: <b>{pts['game_played']}</b> б.\n\n"
+        f"🎮 All Pick: <b>{pts['game_ap']}</b> б.\n"
+        f"🎮 Turbo: <b>{pts['game_turbo']}</b> б.\n\n"
         "Выберите категорию для изменения:"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🐛 Награды за баги", callback_data="reward_set:bug_accepted")],
-        [InlineKeyboardButton(text="🎮 Награды за игры", callback_data="reward_set:game_played")],
+        [InlineKeyboardButton(text="🎮 All Pick", callback_data="reward_set:game_ap")],
+        [InlineKeyboardButton(text="🎮 Turbo", callback_data="reward_set:game_turbo")],
     ])
     return msg_text, keyboard
 
