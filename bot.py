@@ -95,7 +95,7 @@ async def main():
 
     # Запускаем polling
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, drop_pending_updates=True)
     finally:
         from services.weeek_service import close_client
         from database import close_db
