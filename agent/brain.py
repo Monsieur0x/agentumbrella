@@ -9,7 +9,7 @@ from collections import OrderedDict
 import anthropic
 from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
 from agent.system_prompt import get_system_prompt, get_chat_prompt
-from agent.tools import match_tools
+from agent.tools import match_tools, get_tools_for_role
 from agent.tool_executor import execute_tool
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -228,10 +228,11 @@ async def process_message(text: str, username: str, role: str, topic: str,
     messages = [msg.copy() for msg in history]
 
     # 5. Инструменты — фильтруем по ключевым словам (экономия токенов)
+    #    Если regex ничего не поймал — отдаём все tools по роли,
+    #    чтобы Claude сам определил нужную функцию по контексту.
     tools = match_tools(text, role)
     if not tools:
-        # Нет совпадений — вероятно болтовня, tools не нужны
-        tools = []
+        tools = get_tools_for_role(role)
 
     try:
         kwargs = {
