@@ -3,3 +3,4 @@ anthropic
 httpx
 aiosqlite==0.21.0
 python-dotenv==1.1.0
+aiohttp

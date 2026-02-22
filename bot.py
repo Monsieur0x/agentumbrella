@@ -93,10 +93,15 @@ async def main():
 
     print(f"\n🟢 Бот запущен! Режим: ✅ Рабочий\n")
 
+    # Game receiver (HTTP-сервер для Lua-скрипта)
+    from services.game_receiver import start_game_server, stop_game_server
+    await start_game_server()
+
     # Запускаем polling
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        await stop_game_server()
         from services.weeek_service import close_client
         from database import close_db
         await close_client()

@@ -45,7 +45,7 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: 
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 
-_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers"}
+_ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers", "link_login"}
 _OWNER_TOOLS = {"manage_admin", "switch_mode"}
 
 
@@ -199,6 +199,9 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 
     elif name == "refresh_testers":
         return await _refresh_testers()
+
+    elif name == "link_login":
+        return await _link_login(args["action"], args["login"], args.get("username"))
 
     elif name == "switch_mode":
         return await _switch_mode(args["mode"])
@@ -837,6 +840,37 @@ async def _delete_bug(bug_id: int = None, target: str = "both",
     result["success"] = True
     await log_info(f"Баг #{dn} удалён ({target})")
     return result
+
+
+async def _link_login(action: str, login: str, username: str = None) -> dict:
+    """Привязать/отвязать/проверить игровой логин."""
+    from models.login_mapping import link_login, unlink_login, get_telegram_id_by_login
+
+    if action == "check":
+        tid = await get_telegram_id_by_login(login)
+        if tid:
+            from models.tester import get_tester_by_id
+            tester = await get_tester_by_id(tid)
+            uname = _tag(tester["username"]) if tester else f"ID {tid}"
+            return {"login": login, "linked_to": uname}
+        return {"login": login, "linked_to": None}
+
+    if action == "link":
+        if not username:
+            return {"error": "Не указан username тестера"}
+        tester = await get_tester_by_username(_normalize_username(username))
+        if not tester:
+            return {"error": f"Тестер @{_normalize_username(username)} не найден"}
+        await link_login(login, tester["telegram_id"])
+        await log_admin(f"Логин «{login}» привязан к {_tag(tester['username'])}")
+        return {"success": True, "login": login, "username": _tag(tester["username"])}
+
+    if action == "unlink":
+        await unlink_login(login)
+        await log_admin(f"Логин «{login}» отвязан")
+        return {"success": True, "login": login, "unlinked": True}
+
+    return {"error": f"Неизвестное действие: {action}"}
 
 
 async def _switch_mode(mode: str) -> dict:

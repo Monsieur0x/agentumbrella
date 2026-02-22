@@ -249,6 +249,21 @@ ALL_TOOLS = [
             "required": ["target"]
         }
     },
+    # --- ИГРОВЫЕ ЛОГИНЫ ---
+    {
+        "name": "link_login",
+        "description": "Привязать/отвязать игровой логин к тестеру. Админ.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["link", "unlink", "check"], "description": "link/unlink/check"},
+                "login": {"type": "string", "description": "Игровой логин"},
+                "username": {"type": "string", "description": "@username тестера (для link)"}
+            },
+            "required": ["action", "login"]
+        }
+    },
+
     {
         "name": "switch_mode",
         "description": "Переключить режим бота. Владелец.",
@@ -376,6 +391,11 @@ TOOL_KEYWORDS: dict[str, list[str]] = {
         r"удал\w*\s+баг", r"(убери|снеси|грохни|убей|вычеркни)\s+баг",
         r"удал\w*\s+из\s+(бд|вик|weeek|базы)",
         r"удал\w*\s+все\s+баг",
+    ],
+    "link_login": [
+        r"привяж", r"отвяж", r"логин",
+        r"(привязать|отвязать|проверить)\s+логин",
+        r"линк\w*\s+логин",
     ],
     "switch_mode": [
         r"режим", r"наблюдени",

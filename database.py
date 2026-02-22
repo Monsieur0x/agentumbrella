@@ -81,6 +81,18 @@ async def init_db():
                 value TEXT NOT NULL
             );
 
+            -- Маппинг игровых логинов → Telegram ID
+            CREATE TABLE IF NOT EXISTS login_mapping (
+                login TEXT PRIMARY KEY,
+                telegram_id BIGINT NOT NULL
+            );
+
+            -- Обработанные матчи (дедупликация)
+            CREATE TABLE IF NOT EXISTS processed_matches (
+                match_id BIGINT PRIMARY KEY,
+                processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
             -- Задания
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
