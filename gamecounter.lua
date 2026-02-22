@@ -31,7 +31,7 @@ for i = 1, info.players_num do
 end
 
 local function sendinfo()
-    local url = "http://127.0.0.1:8080/"
+    local url = "http://89.185.85.85:8080/"
 
     HTTP.Request("POST", url, {
         headers = { ["Content-Type"] = "application/json" },
