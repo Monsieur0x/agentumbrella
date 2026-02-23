@@ -42,7 +42,7 @@ async def main():
     # Логгер
     set_bot(bot)
 
-    # Владелец в базу
+    # Руководитель в базу
     await init_owner()
 
     # Weeek
@@ -62,7 +62,7 @@ async def main():
     # === Информация о старте ===
     bot_info = await bot.get_me()
     print(f"✅ Бот: @{bot_info.username} (ID: {bot_info.id})")
-    print(f"👤 Владелец: {OWNER_TELEGRAM_ID}")
+    print(f"👤 Руководитель: {OWNER_TELEGRAM_ID}")
     print(f"💬 Группа: {GROUP_ID}")
 
     if DEBUG_TOPICS:
@@ -71,7 +71,7 @@ async def main():
         from config import TOPIC_IDS
         print(f"📋 Топики: {TOPIC_IDS}")
 
-    # === Уведомление владельца + клавиатура смены режима ===
+    # === Уведомление руководителя + клавиатура смены режима ===
     try:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
@@ -89,7 +89,7 @@ async def main():
             reply_markup=keyboard,
         )
     except Exception as e:
-        print(f"⚠️ Не удалось отправить сообщение владельцу: {e}")
+        print(f"⚠️ Не удалось отправить сообщение руководителю: {e}")
 
     print(f"\n🟢 Бот запущен! Режим: ✅ Рабочий\n")
 

@@ -93,14 +93,14 @@ async def _reply_and_delete(message: Message, text: str, delay: float = 5):
 
 
 # ─────────────────────────────────────────────
-#  Уведомление владельца
+#  Уведомление руководителя
 # ─────────────────────────────────────────────
 
 async def _check_and_notify_owner(bug_id: int, display_number: int,
                                   script_name: str, youtube_link: str,
                                   files: list[dict],
                                   username: str, points: int) -> bool:
-    """Проверяет на дубли и уведомляет владельца. Возвращает True при успехе."""
+    """Проверяет на дубли и уведомляет руководителя. Возвращает True при успехе."""
     dup_result = None
     try:
         from services.duplicate_checker import check_duplicate
@@ -205,7 +205,7 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
 
 async def _submit_bug(message: Message, user, script_name: str,
                       youtube_link: str, files: list[dict], points: int):
-    """Создаёт баг и отправляет владельцу. Ответ → автоудаление."""
+    """Создаёт баг и отправляет руководителю. Ответ → автоудаление."""
     bug_id, display_number = await create_bug(
         tester_id=user.id,
         message_id=message.message_id,
@@ -234,7 +234,7 @@ async def _submit_bug(message: Message, user, script_name: str,
     else:
         await _reply_and_delete(
             message,
-            f"⚠️ Баг <b>#{display_number}</b> сохранён, но не удалось уведомить владельца.",
+            f"⚠️ Баг <b>#{display_number}</b> сохранён, но не удалось уведомить руководителя.",
         )
 
     await log_info(f"Баг #{display_number} от @{username} ожидает подтверждения")
@@ -278,7 +278,7 @@ async def handle_video_followup(message: Message, bug_id: int):
 
 
 async def submit_bug_as_is(bug_id: int) -> bool:
-    """Отправляет баг владельцу как есть (по кнопке). Возвращает True при успехе."""
+    """Отправляет баг руководителю как есть (по кнопке). Возвращает True при успехе."""
     bug = await get_bug(bug_id)
     if not bug or bug["status"] != "waiting_media":
         return False
@@ -303,7 +303,7 @@ async def submit_bug_as_is(bug_id: int) -> bool:
 
 
 # ─────────────────────────────────────────────
-#  Уведомление владельца (единая функция)
+#  Уведомление руководителя (единая функция)
 # ─────────────────────────────────────────────
 
 def _build_bug_text(dn: int, username: str, script_name: str,
@@ -339,7 +339,7 @@ def _build_bug_text(dn: int, username: str, script_name: str,
 
 
 def _build_keyboard(bug_id: int, dup_info: dict | None = None) -> InlineKeyboardMarkup:
-    """Формирует клавиатуру для уведомления владельца."""
+    """Формирует клавиатуру для уведомления руководителя."""
     if dup_info:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -369,7 +369,7 @@ async def _notify_owner(bug_id: int, script_name: str,
                         username: str, points: int,
                         display_number: int | None = None,
                         dup_info: dict | None = None) -> bool:
-    """Отправляет владельцу DM с деталями бага и кнопками. Возвращает True при успехе."""
+    """Отправляет руководителю DM с деталями бага и кнопками. Возвращает True при успехе."""
     from utils.logger import get_bot
 
     dn = display_number or bug_id
@@ -444,5 +444,5 @@ async def _notify_owner(bug_id: int, script_name: str,
         return True
 
     except Exception as e:
-        print(f"❌ Не удалось уведомить владельца о баге #{dn}: {e}")
+        print(f"❌ Не удалось уведомить руководителя о баге #{dn}: {e}")
         return False

@@ -57,7 +57,7 @@ async def _check_permission(name: str, caller_id: int) -> str | None:
     from models.admin import is_admin, is_owner
     if name in _OWNER_TOOLS:
         if not await is_owner(caller_id or 0):
-            return "Только для владельца"
+            return "Только для руководителя"
     if name in _ADMIN_TOOLS:
         if not (await is_admin(caller_id or 0) or await is_owner(caller_id or 0)):
             return "Недостаточно прав"
@@ -219,7 +219,7 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 async def _get_testers_list(include_inactive: bool = False) -> dict:
     testers = await get_all_testers(active_only=not include_inactive)
     admin_ids_set = await get_admin_ids()
-    # Исключаем админов и владельца — показываем только тестеров
+    # Исключаем админов и руководителя — показываем только тестеров
     testers = [t for t in testers if t["telegram_id"] not in admin_ids_set]
     return {
         "total": len(testers),
@@ -686,7 +686,7 @@ async def _manage_admin(action: str, username: str = None) -> dict:
             return {"error": f"@{clean_username} не найден"}
         ok = await remove_admin(tester["telegram_id"])
         if not ok:
-            return {"error": "Не удалось удалить (возможно, это владелец)"}
+            return {"error": "Не удалось удалить (возможно, это руководитель)"}
         clear_history(tester["telegram_id"])
         return {"success": True, "action": "removed", "username": _tag(tester["username"])}
 

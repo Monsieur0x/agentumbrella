@@ -145,7 +145,7 @@ async def create_task(title: str, description: str,
                       board_column_id: int = None) -> dict:
     """
     POST /tm/tasks — создаёт задачу.
-    board_column_id — конкретная колонка (выбрана владельцем).
+    board_column_id — конкретная колонка (выбрана руководителем).
     """
     if not WEEEK_API_KEY:
         return {"error": "WEEEK_API_KEY не задан", "success": False}

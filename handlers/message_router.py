@@ -119,7 +119,7 @@ async def handle_group_message(message: Message, bot: Bot):
     if config.BOT_MODE == "observe":
         bot_info = await _get_bot_info(bot)
         if is_bot_mentioned(message, bot_info):
-            # Даём владельцу переключить режим даже в observe
+            # Даём руководителю переключить режим даже в observe
             if await _handle_mode_toggle(message, user):
                 return
             await message.reply(OBSERVE_REPLY)
@@ -229,7 +229,7 @@ async def handle_group_message(message: Message, bot: Bot):
     if not message.text:
         return
 
-    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    # === Команды руководителя: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):
@@ -290,7 +290,7 @@ async def handle_group_message(message: Message, bot: Bot):
 
 
 async def _handle_draft_task_edit(message: Message, user) -> bool:
-    """Если у админа/владельца есть черновик задания, воспринимаем текст как редактирование.
+    """Если у админа/руководителя есть черновик задания, воспринимаем текст как редактирование.
     Работает только в ЛС — в группе редактирование черновиков не оддерживается."""
     tasks_data = await async_load(TASKS_FILE)
     items = tasks_data.get("items", {})
@@ -339,7 +339,7 @@ _MODE_CHAT_KEYWORDS = ("режим чат", "включи чат", "чат ре�
 
 
 async def _handle_mode_toggle(message: Message, user) -> bool:
-    """Обрабатывает команды владельца для переключения режима бота. Возвращает True если обработано."""
+    """Обрабатывает команды руководителя для переключения режима бота. Возвращает True если обработано."""
     if not message.text:
         return False
     if not await is_owner(user.id):
@@ -368,7 +368,7 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
 
 
 async def _handle_weeek_toggle(message: Message, user) -> bool:
-    """Обрабатывает команды владельца 'отключи вик' / 'включи вик'. Возвращает True если обработано."""
+    """Обрабатывает команды руководителя 'отключи вик' / 'включи вик'. Возвращает True если обработано."""
     if not message.text:
         return False
     if not await is_owner(user.id):
@@ -396,7 +396,7 @@ _REWARDS_KEYWORDS = ("настройка наград", "настроить на
 
 
 async def _handle_rewards_settings(message: Message, user) -> bool:
-    """Обрабатывает команду 'настройка наград' для админов/владельцев."""
+    """Обрабатывает команду 'настройка наград' для админов/руководителей."""
     if not message.text:
         return False
     text = message.text.lower().strip()
@@ -501,7 +501,7 @@ async def handle_private_message(message: Message, bot: Bot):
     # === Режим наблюдения: отвечаем фиксированной фразой ===
     import config
     if config.BOT_MODE == "observe":
-        # Даём владельцу переключить режим даже в observe
+        # Даём руководителю переключить режим даже в observe
         if await _handle_mode_toggle(message, user):
             return
         await message.answer(OBSERVE_REPLY)
@@ -546,7 +546,7 @@ async def handle_private_message(message: Message, bot: Bot):
             )
         return
 
-    # === Команды владельца: переключение режима / вкл/выкл Weeek ===
+    # === Команды руководителя: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
         return
     if await _handle_weeek_toggle(message, user):

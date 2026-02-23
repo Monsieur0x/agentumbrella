@@ -7,7 +7,7 @@ from config import OWNER_TELEGRAM_ID
 
 
 async def init_owner():
-    """Добавляет владельца в JSON при старте."""
+    """Добавляет руководителя в JSON при старте."""
     if not OWNER_TELEGRAM_ID:
         return
     key = str(OWNER_TELEGRAM_ID)
@@ -29,7 +29,7 @@ async def init_owner():
 
 
 async def is_admin(telegram_id: int) -> bool:
-    """Проверяет наличие в admins. Возвращает True и для владельца."""
+    """Проверяет наличие в admins. Возвращает True и для руководителя."""
     data = await async_load(ADMINS_FILE)
     return str(telegram_id) in data
 
@@ -77,6 +77,6 @@ async def get_all_admins() -> list[dict]:
 
 
 async def get_admin_ids() -> set[int]:
-    """Возвращает set telegram_id всех админов и владельца."""
+    """Возвращает set telegram_id всех админов и руководителя."""
     data = await async_load(ADMINS_FILE)
     return {v["telegram_id"] for v in data.values()}

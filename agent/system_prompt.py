@@ -13,7 +13,7 @@ def get_system_prompt(context: dict) -> str:
     topic = context.get('topic', 'unknown')
 
     if role == "owner":
-        role_block = "Роль: владелец. Все функции доступны."
+        role_block = "Роль: руководитель. Все функции доступны."
     elif role == "admin":
         role_block = "Роль: админ. Всё кроме управления админами."
     else:

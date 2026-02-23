@@ -9,7 +9,7 @@ from config import GROUP_ID, TOPIC_IDS
 
 async def get_rating(top_count: int = 0) -> dict:
     """
-    Формирует рейтинг тестеров (без админов и владельца).
+    Формирует рейтинг тестеров (без админов и руководителя).
     top_count=0 — все тестеры.
     """
     all_testers = await get_all_testers(active_only=False)

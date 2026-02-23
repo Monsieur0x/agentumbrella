@@ -2,10 +2,10 @@
 Обработка нажатий inline-кнопок:
 
 Новый флоу багов:
-- bug_confirm:{bug_id}          — владелец подтвердил баг → начисляем баллы, показываем доски
-- bug_reject:{bug_id}           — владелец отклонил баг → уведомляем тестера
-- weeek_board:{bug_id}:{board}  — владелец выбрал доску → показываем колонки
-- weeek_col:{bug_id}:{board}:{col} — владелец выбрал колонку → создаём задачу в Weeek
+- bug_confirm:{bug_id}          — руководитель подтвердил баг → начисляем баллы, показываем доски
+- bug_reject:{bug_id}           — руководитель отклонил баг → уведомляем тестера
+- weeek_board:{bug_id}:{board}  — руководитель выбрал доску → показываем колонки
+- weeek_col:{bug_id}:{board}:{col} — руководитель выбрал колонку → создаём задачу в Weeek
 - weeek_skip:{bug_id}           — не отправлять в Weeek
 
 Старый флоу (backward compat):
@@ -76,9 +76,9 @@ async def _add_points_log(tester_id: int, amount: int, reason: str, source: str 
 
 @router.callback_query(F.data.in_({"mode_active", "mode_observe", "mode_chat"}))
 async def handle_mode_select(callback: CallbackQuery):
-    """Владелец выбирает режим работы бота (при запуске или в рантайме)."""
+    """Руководитель выбирает режим работы бота (при запуске или в рантайме)."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может выбирать режим", show_alert=True)
+        await callback.answer("Только руководитель может выбирать режим", show_alert=True)
         return
 
     import config
@@ -183,7 +183,7 @@ async def handle_bug_add_media(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("bug_send:"))
 async def handle_bug_send(callback: CallbackQuery):
-    """Тестер нажал «Готово» — отправляем баг владельцу."""
+    """Тестер нажал «Готово» — отправляем баг руководителю."""
     bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
@@ -202,7 +202,7 @@ async def handle_bug_send(callback: CallbackQuery):
         await callback.answer("Баг отправлен")
     else:
         await callback.message.edit_text(
-            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить владельца.",
+            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить руководителя.",
             parse_mode="HTML", reply_markup=None,
         )
         await callback.answer("Ошибка отправки", show_alert=True)
@@ -238,7 +238,7 @@ async def handle_bug_skip_both(callback: CallbackQuery):
         await callback.answer("Баг отправлен")
     else:
         await callback.message.edit_text(
-            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить владельца.",
+            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить руководителя.",
             parse_mode="HTML", reply_markup=None,
         )
         await callback.answer("Ошибка отправки", show_alert=True)
@@ -254,14 +254,14 @@ async def handle_bug_skip_both(callback: CallbackQuery):
 
 
 # ─────────────────────────────────────────────
-#  Подтверждение бага владельцем
+#  Подтверждение бага руководителем
 # ─────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("bug_confirm:"))
 async def handle_bug_confirm(callback: CallbackQuery):
-    """Владелец подтвердил баг: начисляем баллы и показываем выбор доски Weeek."""
+    """Руководитель подтвердил баг: начисляем баллы и показываем выбор доски Weeek."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может подтверждать", show_alert=True)
+        await callback.answer("Только руководитель может подтверждать", show_alert=True)
         return
 
     bug_id = int(callback.data.split(":")[1])
@@ -282,15 +282,15 @@ async def handle_bug_confirm(callback: CallbackQuery):
     await _show_board_selection(callback, bug_id)
     await callback.answer(f"Баг #{dn} подтверждён, +{points} б.")
     await log_info(
-        f"Баг #{dn} подтверждён владельцем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} подтверждён руководителем @{callback.from_user.username}, +{points} б."
     )
 
 
 @router.callback_query(F.data.startswith("bug_reject:"))
 async def handle_bug_reject(callback: CallbackQuery):
-    """Владелец отклонил баг: уведомляем тестера."""
+    """Руководитель отклонил баг: уведомляем тестера."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может отклонять", show_alert=True)
+        await callback.answer("Только руководитель может отклонять", show_alert=True)
         return
 
     bug_id = int(callback.data.split(":")[1])
@@ -328,7 +328,7 @@ async def handle_bug_reject(callback: CallbackQuery):
         _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> (@{callback.from_user.username})",
     )
     await callback.answer(f"Баг #{dn} отклонён")
-    await log_info(f"Баг #{dn} отклонён владельцем @{callback.from_user.username}")
+    await log_info(f"Баг #{dn} отклонён руководителем @{callback.from_user.username}")
 
 
 async def _show_board_selection(callback: CallbackQuery, bug_id: int):
@@ -375,9 +375,9 @@ async def _show_board_selection(callback: CallbackQuery, bug_id: int):
 
 @router.callback_query(F.data.startswith("weeek_board:"))
 async def handle_weeek_board_select(callback: CallbackQuery):
-    """Владелец выбрал доску — показываем колонки этой доски."""
+    """Руководитель выбрал доску — показываем колонки этой доски."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец", show_alert=True)
+        await callback.answer("Только руководитель", show_alert=True)
         return
 
     parts = callback.data.split(":")
@@ -420,9 +420,9 @@ async def handle_weeek_board_select(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("weeek_col:"))
 async def handle_weeek_col_select(callback: CallbackQuery):
-    """Владелец выбрал колонку — создаём задачу в Weeek."""
+    """Руководитель выбрал колонку — создаём задачу в Weeek."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец", show_alert=True)
+        await callback.answer("Только руководитель", show_alert=True)
         return
 
     parts = callback.data.split(":")
@@ -436,7 +436,7 @@ async def handle_weeek_col_select(callback: CallbackQuery):
 async def _create_weeek_task_and_finish(
     callback: CallbackQuery, bug_id: int, board_id: int, col_id: int | None
 ):
-    """Создаёт задачу в Weeek и обновляет сообщение владельца."""
+    """Создаёт задачу в Weeek и обновляет сообщение руководителя."""
     bug = await get_bug(bug_id)
     if not bug:
         await callback.answer("Баг не найден", show_alert=True)
@@ -516,9 +516,9 @@ async def _create_weeek_task_and_finish(
 
 @router.callback_query(F.data.startswith("weeek_skip:"))
 async def handle_weeek_skip(callback: CallbackQuery):
-    """Владелец решил не отправлять в Weeek."""
+    """Руководитель решил не отправлять в Weeek."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец", show_alert=True)
+        await callback.answer("Только руководитель", show_alert=True)
         return
 
     await _safe_edit(
@@ -657,7 +657,7 @@ async def handle_task_cancel(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("rating_publish:"))
 async def handle_rating_publish(callback: CallbackQuery):
-    """Админ/владелец подтвердил публикацию рейтинга из ЛС."""
+    """Админ/руководитель подтвердил публикацию рейтинга из ЛС."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может публиковать", show_alert=True)
         return
@@ -697,7 +697,7 @@ async def handle_rating_publish(callback: CallbackQuery):
 
 @router.callback_query(F.data == "rating_cancel")
 async def handle_rating_cancel(callback: CallbackQuery):
-    """Админ/владелец отменил публикацию рейтинга."""
+    """Админ/руководитель отменил публикацию рейтинга."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может отменять", show_alert=True)
         return
@@ -750,7 +750,7 @@ def build_rewards_menu(pts: dict) -> tuple[str, InlineKeyboardMarkup]:
 
 @router.callback_query(F.data.startswith("reward_set:"))
 async def handle_reward_set(callback: CallbackQuery):
-    """Админ/владелец выбрал категорию награды — показываем варианты значений."""
+    """Админ/руководитель выбрал категорию награды — показываем варианты значений."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может настраивать награды", show_alert=True)
         return
@@ -795,7 +795,7 @@ async def handle_reward_set(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reward_val:"))
 async def handle_reward_val(callback: CallbackQuery):
-    """Админ/владелец выбрал конкретное значение награды."""
+    """Админ/руководитель выбрал конкретное значение награды."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может настраивать награды", show_alert=True)
         return
@@ -825,7 +825,7 @@ async def handle_reward_val(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reward_custom:"))
 async def handle_reward_custom(callback: CallbackQuery):
-    """Админ/владелец хочет ввести своё значение — ставим ожидание."""
+    """Админ/руководитель хочет ввести своё значение — ставим ожидание."""
     if not (await is_admin(callback.from_user.id) or await is_owner(callback.from_user.id)):
         await callback.answer("Только админ может настраивать награды", show_alert=True)
         return
@@ -870,9 +870,9 @@ async def handle_rewards_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("dup_confirm:"))
 async def handle_dup_confirm(callback: CallbackQuery):
-    """Владелец подтвердил: это дубль — помечаем и уведомляем тестера."""
+    """Руководитель подтвердил: это дубль — помечаем и уведомляем тестера."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может решать", show_alert=True)
+        await callback.answer("Только руководитель может решать", show_alert=True)
         return
 
     bug_id = int(callback.data.split(":")[1])
@@ -913,9 +913,9 @@ async def handle_dup_confirm(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("dup_notdup:"))
 async def handle_dup_notdup(callback: CallbackQuery):
-    """Владелец решил: не дубль — принимаем баг, начисляем баллы, показываем доски."""
+    """Руководитель решил: не дубль — принимаем баг, начисляем баллы, показываем доски."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может решать", show_alert=True)
+        await callback.answer("Только руководитель может решать", show_alert=True)
         return
 
     bug_id = int(callback.data.split(":")[1])
@@ -935,7 +935,7 @@ async def handle_dup_notdup(callback: CallbackQuery):
     await _show_board_selection(callback, bug_id)
     await callback.answer(f"Не дубль — баг #{dn} принят, +{points} б.")
     await log_info(
-        f"Баг #{dn} — не дубль, принят владельцем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} — не дубль, принят руководителем @{callback.from_user.username}, +{points} б."
     )
 
 
@@ -1014,7 +1014,7 @@ async def handle_dup_no(callback: CallbackQuery):
 async def handle_weeek_board_legacy(callback: CallbackQuery):
     """DEPRECATED: старый формат выбора доски. Оставлен для кнопок, отправленных до обновления."""
     if not await is_owner(callback.from_user.id):
-        await callback.answer("Только владелец может выбирать доску", show_alert=True)
+        await callback.answer("Только руководитель может выбирать доску", show_alert=True)
         return
 
     parts = callback.data.split(":")
