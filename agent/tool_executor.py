@@ -254,6 +254,8 @@ async def _get_tester_stats(username: str) -> dict:
 
 async def _get_team_stats(period: str) -> dict:
     testers = await get_all_testers()
+    admin_ids_set = await get_admin_ids()
+    testers = [t for t in testers if t["telegram_id"] not in admin_ids_set]
     bugs = await get_bug_stats(period)
 
     # Фильтрация баллов по периоду через points_log
@@ -311,6 +313,8 @@ async def _get_inactive_testers(days: int) -> dict:
     """Тестеры без активности за N дней."""
     cutoff = datetime.now() - timedelta(days=days)
     testers = await get_all_testers(active_only=True)
+    admin_ids_set = await get_admin_ids()
+    testers = [t for t in testers if t["telegram_id"] not in admin_ids_set]
     points_data = await async_load(POINTS_LOG_FILE)
     items = points_data.get("items", [])
 
