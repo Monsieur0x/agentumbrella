@@ -136,7 +136,7 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     dn = bug.get("display_number") or bug_id
 
     await update_bug(bug_id, status="accepted")
-    await _set_bug_reactions(bug, "✅")
+    await _set_bug_reactions(bug, "👍")
     await update_tester_points(bug["tester_id"], points)
     await update_tester_stats(bug["tester_id"], bugs=1)
 
@@ -333,7 +333,7 @@ async def handle_bug_reject(callback: CallbackQuery):
     dn = bug.get("display_number") or bug_id
 
     await update_bug(bug_id, status="rejected")
-    await _set_bug_reactions(bug, "❌")
+    await _set_bug_reactions(bug, "👎")
 
     # Уведомляем тестера
     bot = get_bot()
@@ -914,7 +914,7 @@ async def handle_dup_confirm(callback: CallbackQuery):
 
     dn = bug.get("display_number") or bug_id
     await mark_duplicate(bug_id)
-    await _set_bug_reactions(bug, "❌")
+    await _set_bug_reactions(bug, "👎")
 
     # Уведомляем тестера
     bot = get_bot()
