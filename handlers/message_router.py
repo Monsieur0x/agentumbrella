@@ -102,6 +102,11 @@ async def handle_group_message(message: Message, bot: Bot):
     user = message.from_user
     topic = get_topic_name(message)
 
+    # Определяем тип контента
+    msg_type = "text" if message.text else "photo" if message.photo else "video" if message.video else "doc" if message.document else "other"
+    msg_len = len(message.text or message.caption or "")
+    print(f"[MSG] group @{user.username} in topic={topic} ({msg_type}, {msg_len} chars)")
+
     # === Режим отладки: показываем ID топика ===
     if DEBUG_TOPICS:
         await message.reply(
@@ -119,21 +124,27 @@ async def handle_group_message(message: Message, bot: Bot):
     if config.BOT_MODE == "observe":
         bot_info = await _get_bot_info(bot)
         if is_bot_mentioned(message, bot_info):
-            # Даём руководителю переключить режим даже в observe
             if await _handle_mode_toggle(message, user):
+                print(f"[ROUTE] → mode_toggle (observe)")
                 return
+            print(f"[ROUTE] → observe_reply")
             await message.reply(OBSERVE_REPLY)
+        else:
+            print(f"[ROUTE] → ignore (observe mode)")
         return
 
     # === Чат-режим: свободная болтовня без функций координатора ===
     if config.BOT_MODE == "chat":
         bot_info = await _get_bot_info(bot)
         if not is_bot_mentioned(message, bot_info):
+            print(f"[ROUTE] → ignore (chat mode, not mentioned)")
             return
         if await _handle_mode_toggle(message, user):
+            print(f"[ROUTE] → mode_toggle (chat)")
             return
         if not message.text:
             return
+        print(f"[ROUTE] → chat_brain")
         try:
             await bot.send_chat_action(message.chat.id, "typing")
         except Exception:
@@ -143,7 +154,7 @@ async def handle_group_message(message: Message, bot: Bot):
             if response:
                 await _safe_reply(message, response, parse_mode="HTML")
         except Exception as e:
-            print(f"❌ Ошибка chat: {e}")
+            print(f"[ROUTE] chat ERROR: {e}")
             await message.reply(f"⚠️ Ошибка: <code>{str(e)[:300]}</code>", parse_mode="HTML")
         return
 
@@ -159,6 +170,7 @@ async def handle_group_message(message: Message, bot: Bot):
 
     # === Игнорируем топик Логины (чувствительные данные) ===
     if topic == "logins":
+        print(f"[ROUTE] → ignore (logins topic)")
         return
 
     # === Роутинг по топикам ===
@@ -187,6 +199,7 @@ async def handle_group_message(message: Message, bot: Bot):
             if waiting:
                 waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
                 bug_id = waiting[0]["id"]
+                print(f"[ROUTE] → bug_followup #{bug_id} (file={file_present}, youtube={has_youtube})")
                 if file_present:
                     await handle_file_followup(message, bug_id)
                 if has_youtube:
@@ -211,42 +224,54 @@ async def handle_group_message(message: Message, bot: Bot):
                     break
 
             if collected_has_bug:
+                print(f"[ROUTE] → bug_handler (collected {len(collected)} msgs)")
                 await handle_bug_report(collected[0], media_messages=collected)
                 return
 
         if has_hashtag_bug:
+            print(f"[ROUTE] → bug_handler (single msg)")
             await handle_bug_report(message)
             return
         # Без #баг и без ожидающего — игнорируем
+        print(f"[ROUTE] → ignore (bugs topic, no #баг)")
         return
 
     # Во всех топиках (кроме bugs) — отвечаем только если обращаются к боту
     # через @упоминание или реплай на сообщение бота
     if not mentioned:
+        print(f"[ROUTE] → ignore (not mentioned)")
         return
 
     # === Отправляем в мозг агента ===
     if not message.text:
+        print(f"[ROUTE] → ignore (no text)")
         return
 
     # === Команды руководителя: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
+        print(f"[ROUTE] → mode_toggle")
         return
     if await _handle_weeek_toggle(message, user):
+        print(f"[ROUTE] → weeek_toggle")
         return
 
     # === Ожидание ввода своего значения награды ===
     if await _handle_pending_reward_input(message, user):
+        print(f"[ROUTE] → reward_input")
         return
 
     # === Настройка наград ===
     if await _handle_rewards_settings(message, user):
+        print(f"[ROUTE] → rewards_settings")
         return
 
     # Тестеры в группе — только статистика и рейтинг, без Claude API
     if role == "tester":
         handled = await _handle_tester_commands(message, user)
-        if not handled:
+        if handled:
+            print(f"[ROUTE] → tester_cmd")
+        else:
+            print(f"[ROUTE] → tester_help (no command matched)")
             await message.reply(
                 "Тебе доступны:\n"
                 "• <b>моя статистика</b>\n"
@@ -269,7 +294,7 @@ async def handle_group_message(message: Message, bot: Bot):
     except Exception:
         pass
 
-    print(f"\n💬 [{role}] @{user.username} в [{topic}]: {message.text[:100]}")
+    print(f"[ROUTE] → brain ({role}) \"{message.text[:80]}\"")
 
     try:
         response = await process_message(
@@ -282,7 +307,7 @@ async def handle_group_message(message: Message, bot: Bot):
         if response:
             await _safe_reply(message, response, parse_mode="HTML")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"[ROUTE] brain ERROR: {e}")
         await message.reply(
             f"⚠️ Ошибка при обработке.\n<code>{str(e)[:300]}</code>",
             parse_mode="HTML"
@@ -350,16 +375,19 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
 
     if any(kw in text for kw in _MODE_OBSERVE_KEYWORDS):
         config.BOT_MODE = "observe"
+        print(f"[MODE] Переключён на observe by @{user.username}")
         await message.reply("👁 Режим переключён: <b>наблюдение</b>. Бот отвечает только на @упоминания.", parse_mode="HTML")
         return True
 
     if any(kw in text for kw in _MODE_ACTIVE_KEYWORDS):
         config.BOT_MODE = "active"
+        print(f"[MODE] Переключён на active by @{user.username}")
         await message.reply("✅ Режим переключён: <b>рабочий</b>. Бот отвечает на все сообщения.", parse_mode="HTML")
         return True
 
     if any(kw in text for kw in _MODE_CHAT_KEYWORDS):
         config.BOT_MODE = "chat"
+        print(f"[MODE] Переключён на chat by @{user.username}")
         await message.reply("💬 Режим переключён: <b>чат</b>. Свободная болтовня, функции координатора отключены.", parse_mode="HTML")
         return True
 
@@ -379,11 +407,13 @@ async def _handle_weeek_toggle(message: Message, user) -> bool:
 
     if any(kw in text for kw in _WEEEK_OFF_KEYWORDS):
         config.WEEEK_ENABLED = False
+        print(f"[WEEEK-TOGGLE] Отключён by @{user.username}")
         await message.reply("🔴 Weeek <b>отключён</b>. Баги будут сохраняться без отправки в Weeek.", parse_mode="HTML")
         return True
 
     if any(kw in text for kw in _WEEEK_ON_KEYWORDS):
         config.WEEEK_ENABLED = True
+        print(f"[WEEEK-TOGGLE] Включён by @{user.username}")
         await message.reply("🟢 Weeek <b>включён</b>. Баги снова будут отправляться в Weeek.", parse_mode="HTML")
         return True
 
@@ -497,20 +527,24 @@ async def handle_private_message(message: Message, bot: Bot):
         return
 
     user = message.from_user
+    print(f"[MSG] DM @{user.username}: \"{(message.text or '')[:80]}\"")
 
     # === Режим наблюдения: отвечаем фиксированной фразой ===
     import config
     if config.BOT_MODE == "observe":
-        # Даём руководителю переключить режим даже в observe
         if await _handle_mode_toggle(message, user):
+            print(f"[ROUTE] DM → mode_toggle (observe)")
             return
+        print(f"[ROUTE] DM → observe_reply")
         await message.answer(OBSERVE_REPLY)
         return
 
     # === Чат-режим: свободная болтовня без функций координатора ===
     if config.BOT_MODE == "chat":
         if await _handle_mode_toggle(message, user):
+            print(f"[ROUTE] DM → mode_toggle (chat)")
             return
+        print(f"[ROUTE] DM → chat_brain")
         try:
             await bot.send_chat_action(message.chat.id, "typing")
         except Exception:
@@ -520,7 +554,7 @@ async def handle_private_message(message: Message, bot: Bot):
             if response:
                 await _safe_reply(message, response, parse_mode="HTML")
         except Exception as e:
-            print(f"❌ Ошибка chat: {e}")
+            print(f"[ROUTE] DM chat ERROR: {e}")
             await message.answer(f"⚠️ Ошибка: <code>{str(e)[:300]}</code>", parse_mode="HTML")
         return
 
@@ -536,7 +570,10 @@ async def handle_private_message(message: Message, bot: Bot):
     # Тестеры в ЛС — только статистика и рейтинг, без Claude API
     if role == "tester":
         handled = await _handle_tester_commands(message, user)
-        if not handled:
+        if handled:
+            print(f"[ROUTE] DM → tester_cmd")
+        else:
+            print(f"[ROUTE] DM → tester_help")
             await message.answer(
                 "🚫 В личных сообщениях тебе доступны только:\n\n"
                 "• <b>моя статистика</b> — твои баллы и показатели\n"
@@ -548,20 +585,25 @@ async def handle_private_message(message: Message, bot: Bot):
 
     # === Команды руководителя: переключение режима / вкл/выкл Weeek ===
     if await _handle_mode_toggle(message, user):
+        print(f"[ROUTE] DM → mode_toggle")
         return
     if await _handle_weeek_toggle(message, user):
+        print(f"[ROUTE] DM → weeek_toggle")
         return
 
     # === Ожидание ввода своего значения награды ===
     if await _handle_pending_reward_input(message, user):
+        print(f"[ROUTE] DM → reward_input")
         return
 
     # === Настройка наград ===
     if await _handle_rewards_settings(message, user):
+        print(f"[ROUTE] DM → rewards_settings")
         return
 
     # Проверяем: есть ли черновик задания для редактирования
     if await _handle_draft_task_edit(message, user):
+        print(f"[ROUTE] DM → draft_edit")
         return
 
     try:
@@ -569,7 +611,7 @@ async def handle_private_message(message: Message, bot: Bot):
     except Exception:
         pass
 
-    print(f"\n💬 [ЛС] [{role}] @{user.username}: {message.text[:100]}")
+    print(f"[ROUTE] DM → brain ({role}) \"{message.text[:80]}\"")
 
     try:
         response = await process_message(
@@ -582,7 +624,7 @@ async def handle_private_message(message: Message, bot: Bot):
         if response:
             await _safe_reply(message, response, parse_mode="HTML")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"[ROUTE] DM brain ERROR: {e}")
         await message.answer(
             f"⚠️ Ошибка при обработке. Проверь ANTHROPIC_API_KEY в .env\n\n"
             f"<code>{str(e)[:300]}</code>",

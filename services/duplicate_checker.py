@@ -16,8 +16,10 @@ async def check_duplicate(title: str, description: str) -> dict:
         {"is_duplicate": bool, "similar_bug_id": int|null, "explanation": str}
     """
     existing = await get_recent_bugs(limit=DUPLICATE_CHECK_LIMIT)
+    print(f"[DUP-CHECK] Проверка \"{title[:50]}\" среди {len(existing)} багов")
 
     if not existing:
+        print(f"[DUP-CHECK] Нет существующих багов для сравнения")
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": "Нет существующих багов для сравнения"}
 
     # Предфильтрация: сначала баги с тем же скриптом, потом остальные
@@ -70,14 +72,17 @@ async def check_duplicate(title: str, description: str) -> dict:
             text = text.strip()
 
         result = json.loads(text)
+        is_dup = bool(result.get("is_duplicate", False))
+        sim_id = result.get("similar_bug_id")
+        print(f"[DUP-CHECK] Результат: {'дубль' if is_dup else 'не дубль'}" + (f" (похож на #{sim_id})" if sim_id else ""))
         return {
-            "is_duplicate": bool(result.get("is_duplicate", False)),
-            "similar_bug_id": result.get("similar_bug_id"),
+            "is_duplicate": is_dup,
+            "similar_bug_id": sim_id,
             "explanation": result.get("explanation", ""),
         }
     except json.JSONDecodeError as e:
-        print(f"⚠️ Ошибка парсинга JSON от Claude: {e}")
+        print(f"[DUP-CHECK] ERROR парсинг JSON: {e}")
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": "Не удалось распарсить ответ ИИ"}
     except Exception as e:
-        print(f"⚠️ Ошибка Claude API при проверке дублей: {e}")
+        print(f"[DUP-CHECK] ERROR API: {e}")
         return {"is_duplicate": False, "similar_bug_id": None, "explanation": f"Ошибка API: {str(e)[:100]}"}

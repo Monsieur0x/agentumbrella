@@ -38,6 +38,7 @@ async def _request(method: str, endpoint: str, data: dict = None) -> dict:
     url = f"{BASE_URL}/{endpoint}"
     client = _get_client()
 
+    print(f"[WEEEK-API] {method} {endpoint}")
     try:
         response = await client.request(
             method=method,
@@ -45,21 +46,22 @@ async def _request(method: str, endpoint: str, data: dict = None) -> dict:
             json=data,
         )
         response.raise_for_status()
+        print(f"[WEEEK-API] → {response.status_code}")
         # DELETE может вернуть 204 без тела
         if response.status_code == 204 or not response.content:
             return {"success": True}
         return response.json()
     except httpx.HTTPStatusError as e:
+        print(f"[WEEEK-API] ERROR {e.response.status_code}: {e.response.text[:200]}")
         try:
             return e.response.json()
         except Exception:
-            print(f"❌ Weeek API {e.response.status_code}: {e.response.text[:200]}")
             return {"error": f"HTTP {e.response.status_code}"}
     except httpx.TimeoutException:
-        print("❌ Weeek API: timeout")
+        print("[WEEEK-API] ERROR: timeout")
         return {"error": "Timeout"}
     except Exception as e:
-        print(f"❌ Weeek API ошибка: {e}")
+        print(f"[WEEEK-API] ERROR: {e}")
         return {"error": str(e)}
 
 

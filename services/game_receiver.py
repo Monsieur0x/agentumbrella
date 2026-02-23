@@ -31,21 +31,27 @@ async def _handle_game(request: web.Request) -> web.Response:
 
     login = data.get("login")
     match_id = data.get("matchid")
+    gamemode_raw = data.get("gamemode_string", "?")
+    print(f"[GAME] POST / login={login}, match={match_id}, gamemode={gamemode_raw}")
 
     if not login or not match_id:
+        print(f"[GAME] missing fields")
         return web.json_response({"status": "missing_fields"}, status=400)
 
     # Дедупликация: один матч = одно начисление
     if await is_match_processed(match_id):
+        print(f"[GAME] match={match_id} already processed")
         return web.json_response({"status": "already_processed"})
 
     # Найти тестера по логину
     telegram_id = await get_telegram_id_by_login(login)
     if not telegram_id:
+        print(f"[GAME] match={match_id} unknown login={login}")
         return web.json_response({"status": "unknown_login"})
 
     tester = await get_tester_by_id(telegram_id)
     if not tester:
+        print(f"[GAME] match={match_id} tester_not_found for telegram_id={telegram_id}")
         return web.json_response({"status": "tester_not_found"})
 
     # Начислить баллы (разные за разные режимы)
@@ -79,9 +85,10 @@ async def _handle_game(request: web.Request) -> web.Response:
     # Пометить матч обработанным
     await mark_match_processed(match_id)
 
-    # Лог в Telegram
+    # Лог
     username_display = f"@{tester['username']}" if tester.get("username") else tester.get("full_name", "?")
     gamemode = data.get("gamemode_string", "?")
+    print(f"[GAME] match={match_id} {username_display} +{points} б. ({gamemode})")
     await log_info(f"Игра #{match_id} ({gamemode}): {username_display} +{points} б.")
 
     return web.json_response({"status": "ok", "points": points})
@@ -100,9 +107,9 @@ async def start_game_server(host: str = "0.0.0.0", port: int = 8080):
     site = web.TCPSite(_runner, host, port)
     try:
         await site.start()
-        print(f"🎮 Game receiver запущен на {host}:{port}")
+        print(f"[STARTUP] Game receiver запущен на {host}:{port}")
     except OSError as e:
-        print(f"⚠️ Game receiver: не удалось запустить на {host}:{port} — {e}")
+        print(f"[STARTUP] Game receiver: не удалось запустить на {host}:{port} — {e}")
         _runner = None
 
 
@@ -112,4 +119,4 @@ async def stop_game_server():
     if _runner:
         await _runner.cleanup()
         _runner = None
-        print("🎮 Game receiver остановлен")
+        print("[SHUTDOWN] Game receiver остановлен")

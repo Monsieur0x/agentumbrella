@@ -205,7 +205,7 @@ async def _call_claude(**kwargs):
         except anthropic.APIStatusError as e:
             if e.status_code == 529 and attempt < max_retries - 1:
                 wait = 2 ** attempt * 2  # 2s, 4s, 8s
-                print(f"⏳ Claude API перегружен (529), повтор через {wait}с...")
+                print(f"[CLAUDE] API перегружен (529), повтор через {wait}с...")
                 await asyncio.sleep(wait)
             else:
                 raise
@@ -218,11 +218,13 @@ async def process_message(text: str, username: str, role: str, topic: str,
     # 1. Мгновенный ответ без API
     instant = get_instant_reply(text)
     if instant:
+        print(f"[CLAUDE] Мгновенный ответ: \"{text.strip()[:50]}\"")
         return instant
 
     # 2. Прямые команды без Claude (рейтинг, статистика @username)
     direct = await try_direct_command(text, caller_id)
     if direct:
+        print(f"[CLAUDE] Прямая команда без API: \"{text.strip()[:50]}\"")
         return direct
 
     context = {"username": username, "role": role, "topic": topic}
@@ -255,7 +257,11 @@ async def process_message(text: str, username: str, role: str, topic: str,
             kwargs["tools"] = tools
             kwargs["tool_choice"] = {"type": "auto"}
 
+        print(f"[CLAUDE] Запрос: role={role}, tools={len(tools) if tools else 0}, model={model}")
         response = await _call_claude(**kwargs)
+        usage = response.usage
+        has_tools = any(b.type == "tool_use" for b in response.content)
+        print(f"[CLAUDE] Ответ: {'tool_use' if has_tools else 'text'} (in={usage.input_tokens}, out={usage.output_tokens})")
 
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
@@ -275,13 +281,13 @@ async def process_message(text: str, username: str, role: str, topic: str,
             for block in tool_use_blocks:
                 func_name = block.name
                 func_args = json.dumps(block.input, ensure_ascii=False)
-                print(f"  🔧 Вызов: {func_name}({func_args})")
+                print(f"[TOOL] Вызов: {func_name}({func_args[:100]})")
 
                 if func_name in _SILENT_TOOLS:
                     called_silent_tool = True
 
                 result = await execute_tool(func_name, func_args, caller_id, topic)
-                print(f"  📦 Результат: {result[:200]}...")
+                print(f"[TOOL] {func_name} → {result[:150]}")
 
                 tool_results.append({
                     "type": "tool_result",
@@ -301,6 +307,9 @@ async def process_message(text: str, username: str, role: str, topic: str,
                 cont_kwargs["tools"] = tools
                 cont_kwargs["tool_choice"] = {"type": "auto"}
             response = await _call_claude(**cont_kwargs)
+            usage = response.usage
+            has_tools = any(b.type == "tool_use" for b in response.content)
+            print(f"[CLAUDE] Продолжение (раунд {round_num}): {'tool_use' if has_tools else 'text'} (in={usage.input_tokens}, out={usage.output_tokens})")
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
         # Если инструмент сам отправил ответ — не дублируем
@@ -323,15 +332,25 @@ async def process_message(text: str, username: str, role: str, topic: str,
     except anthropic.RateLimitError:
         if history and history[-1].get("role") == "user":
             history.pop()
+        print("[CLAUDE] RateLimitError — превышен лимит запросов")
         return "⚠️ Claude API: превышен лимит запросов. Подождите немного."
     except anthropic.AuthenticationError:
         if history and history[-1].get("role") == "user":
             history.pop()
+        print("[CLAUDE] AuthenticationError — неверный API ключ")
         return "⚠️ Ошибка авторизации Claude API. Проверьте ANTHROPIC_API_KEY в .env"
+    except anthropic.APIStatusError as e:
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        if e.status_code in (400, 402):
+            print(f"[CLAUDE] Баланс исчерпан: {e.status_code}")
+            return "⚠️ Бот временно недоступен. Свяжитесь с руководителем."
+        print(f"[CLAUDE] APIStatusError {e.status_code}: {e.message}")
+        return f"⚠️ Ошибка API: {str(e)[:200]}"
     except Exception as e:
         if history and history[-1].get("role") == "user":
             history.pop()
-        print(f"❌ Ошибка brain: {e}")
+        print(f"[CLAUDE] ERROR: {e}")
         return f"⚠️ Ошибка: {str(e)[:200]}"
 
 
@@ -348,12 +367,15 @@ async def process_chat_message(text: str, caller_id: int) -> str:
     messages = [msg.copy() for msg in history]
 
     try:
+        print(f"[CLAUDE] Chat запрос от user_id={caller_id}, model={CHAT_MODEL}")
         response = await _call_claude(
             model=CHAT_MODEL,
             system=system_prompt,
             messages=messages,
             max_tokens=MAX_TOKENS,
         )
+        usage = response.usage
+        print(f"[CLAUDE] Chat ответ (in={usage.input_tokens}, out={usage.output_tokens})")
 
         text_blocks = [b for b in response.content if b.type == "text"]
         reply = text_blocks[0].text if text_blocks else "чё"
@@ -366,9 +388,18 @@ async def process_chat_message(text: str, caller_id: int) -> str:
     except anthropic.RateLimitError:
         if history and history[-1].get("role") == "user":
             history.pop()
+        print("[CLAUDE] Chat: RateLimitError")
         return "⚠️ Claude API: превышен лимит запросов. Подождите немного."
+    except anthropic.APIStatusError as e:
+        if history and history[-1].get("role") == "user":
+            history.pop()
+        if e.status_code in (400, 402):
+            print(f"[CLAUDE] Chat: баланс исчерпан: {e.status_code}")
+            return "⚠️ Бот временно недоступен. Свяжитесь с руководителем."
+        print(f"[CLAUDE] Chat: APIStatusError {e.status_code}: {e.message}")
+        return f"⚠️ Ошибка API: {str(e)[:200]}"
     except Exception as e:
         if history and history[-1].get("role") == "user":
             history.pop()
-        print(f"❌ Ошибка chat brain: {e}")
+        print(f"[CLAUDE] Chat ERROR: {e}")
         return f"⚠️ Ошибка: {str(e)[:200]}"

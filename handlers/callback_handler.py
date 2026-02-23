@@ -63,6 +63,7 @@ async def _set_bug_reactions(bug: dict, emoji: str):
     for mid in bug.get("media_message_ids", []):
         msg_ids.add(mid)
 
+    print(f"[REACTION] emoji={emoji} на {len(msg_ids)} сообщений")
     for mid in msg_ids:
         try:
             await bot.set_message_reaction(
@@ -70,8 +71,8 @@ async def _set_bug_reactions(bug: dict, emoji: str):
                 message_id=mid,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[REACTION] ERROR msg_id={mid}: {e}")
 
 
 async def _add_points_log(tester_id: int, amount: int, reason: str, source: str = "manual", admin_id: int = None):
@@ -110,6 +111,7 @@ async def handle_mode_select(callback: CallbackQuery):
 
     mode = callback.data  # "mode_active", "mode_observe" или "mode_chat"
     config.BOT_MODE = mode.replace("mode_", "")  # "active", "observe" или "chat"
+    print(f"[CALLBACK] mode_select → {config.BOT_MODE} by @{callback.from_user.username}")
 
     labels = {"active": "✅ Рабочий режим", "observe": "👁 Режим наблюдения", "chat": "💬 Чат-режим"}
     label = labels.get(config.BOT_MODE, config.BOT_MODE)
@@ -134,6 +136,7 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     """Общая логика принятия бага: статус, баллы, points_log, счётчики. Возвращает начисленные баллы."""
     points = bug["points_awarded"]
     dn = bug.get("display_number") or bug_id
+    print(f"[BUG-ACCEPT] #{dn} tester={bug['tester_id']}, +{points} б.")
 
     await update_bug(bug_id, status="accepted")
     await _set_bug_reactions(bug, "👍")
@@ -187,6 +190,7 @@ async def handle_bug_add_media(callback: CallbackQuery):
     bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
+    print(f"[CALLBACK] bug_add_media:{bug_id} by @{callback.from_user.username}")
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id
@@ -213,6 +217,7 @@ async def handle_bug_send(callback: CallbackQuery):
     bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
+    print(f"[CALLBACK] bug_send:{bug_id} by @{callback.from_user.username}")
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id
@@ -249,6 +254,7 @@ async def handle_bug_skip_both(callback: CallbackQuery):
     bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
+    print(f"[CALLBACK] bug_skip_both:{bug_id} by @{callback.from_user.username}")
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id if bug else bug_id
@@ -302,6 +308,7 @@ async def handle_bug_confirm(callback: CallbackQuery):
         return
 
     dn = bug.get("display_number") or bug_id
+    print(f"[CALLBACK] bug_confirm:{bug_id} by @{callback.from_user.username}")
     points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek
@@ -331,6 +338,7 @@ async def handle_bug_reject(callback: CallbackQuery):
         return
 
     dn = bug.get("display_number") or bug_id
+    print(f"[CALLBACK] bug_reject:{bug_id} by @{callback.from_user.username}")
 
     await update_bug(bug_id, status="rejected")
     await _set_bug_reactions(bug, "👎")
@@ -355,6 +363,7 @@ async def handle_bug_reject(callback: CallbackQuery):
         _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> ({callback.from_user.username})",
     )
     await callback.answer(f"Баг #{dn} отклонён")
+    print(f"[BUG-REJECT] #{dn} by @{callback.from_user.username}")
     await log_info(f"Баг #{dn} отклонён руководителем {callback.from_user.username}")
 
 
@@ -410,6 +419,7 @@ async def handle_weeek_board_select(callback: CallbackQuery):
     parts = callback.data.split(":")
     bug_id = int(parts[1])
     board_id = int(parts[2])
+    print(f"[CALLBACK] weeek_board:{bug_id}:{board_id} by @{callback.from_user.username}")
 
     from services.weeek_service import get_board_columns, get_cached_boards
 
@@ -456,6 +466,7 @@ async def handle_weeek_col_select(callback: CallbackQuery):
     bug_id = int(parts[1])
     board_id = int(parts[2])
     col_id = int(parts[3]) if len(parts) > 3 else None
+    print(f"[CALLBACK] weeek_col:{bug_id}:{board_id}:{col_id} by @{callback.from_user.username}")
 
     await _create_weeek_task_and_finish(callback, bug_id, board_id, col_id)
 
@@ -475,6 +486,7 @@ async def _create_weeek_task_and_finish(
         f"Шаги: {bug.get('steps') or bug.get('description', '')}\n"
         f"Видео: {bug.get('youtube_link', '')}"
     )
+    print(f"[WEEEK] Создание задачи для бага #{bug_id}, board={board_id}, col={col_id}")
     result = await weeek_create_task(
         title=bug.get("script_name") or bug.get("title", ""),
         description=description,
@@ -491,6 +503,7 @@ async def _create_weeek_task_and_finish(
 
     if result.get("success"):
         task_id = str(result.get("task_id", ""))
+        print(f"[WEEEK] Задача создана: task_id={task_id} для бага #{bug_id}, доска={board_name}")
 
         # Определяем имя колонки
         col_name = ""
@@ -527,8 +540,9 @@ async def _create_weeek_task_and_finish(
                         filename = f"bug_{bug_id}{ext_map.get(f.get('file_type', ''), '')}"
 
                     await upload_attachment(task_id, file_bytes, filename)
+                    print(f"[WEEEK] Файл прикреплён: {filename} к задаче #{task_id}")
                 except Exception as e:
-                    print(f"⚠️ Не удалось прикрепить файл к задаче Weeek #{task_id}: {e}")
+                    print(f"[WEEEK] ERROR: не удалось прикрепить файл к задаче #{task_id}: {e}")
 
         await _safe_edit(
             callback,
@@ -548,6 +562,7 @@ async def handle_weeek_skip(callback: CallbackQuery):
         await callback.answer("Только руководитель", show_alert=True)
         return
 
+    print(f"[CALLBACK] weeek_skip by @{callback.from_user.username}")
     await _safe_edit(
         callback,
         _safe_html_text(callback) + "\n\n⏭ Не отправлен в Weeek",
@@ -567,6 +582,7 @@ async def handle_task_publish(callback: CallbackQuery):
         return
 
     task_id = int(callback.data.split(":")[1])
+    print(f"[CALLBACK] task_publish:{task_id} by @{callback.from_user.username}")
 
     tasks_data = await async_load(TASKS_FILE)
     task = tasks_data.get("items", {}).get(str(task_id))
@@ -612,7 +628,7 @@ async def handle_task_publish(callback: CallbackQuery):
             await async_update(TASKS_FILE, update_published)
             published = True
         except Exception as e:
-            print(f"❌ Ошибка публикации задания: {e}")
+            print(f"[TASK] ERROR публикации задания #{task_id}: {e}")
 
     if not published:
         def update_status(data):
@@ -650,6 +666,7 @@ async def handle_task_cancel(callback: CallbackQuery):
         return
 
     task_id = int(callback.data.split(":")[1])
+    print(f"[CALLBACK] task_cancel:{task_id} by @{callback.from_user.username}")
 
     def update_status(data):
         items = data.get("items", {})
@@ -837,6 +854,7 @@ async def handle_reward_val(callback: CallbackQuery):
 
     from models.settings import set_points_value, get_points_config
     await set_points_value(reward_type, value)
+    print(f"[REWARDS] {reward_type} → {value} by @{callback.from_user.username}")
 
     label = _REWARD_LABELS[reward_type]
 
@@ -913,6 +931,7 @@ async def handle_dup_confirm(callback: CallbackQuery):
         return
 
     dn = bug.get("display_number") or bug_id
+    print(f"[CALLBACK] dup_confirm:{bug_id} by @{callback.from_user.username}")
     await mark_duplicate(bug_id)
     await _set_bug_reactions(bug, "👎")
 
@@ -936,6 +955,7 @@ async def handle_dup_confirm(callback: CallbackQuery):
         _safe_html_text(callback) + f"\n\n🔄 <b>Дубль</b> (решил {callback.from_user.username})",
     )
     await callback.answer("Баг помечен как дубль")
+    print(f"[BUG-DUP] #{dn} помечен дублём by @{callback.from_user.username}")
     await log_info(f"Баг #{dn} помечен как дубль ({callback.from_user.username})")
 
 
@@ -957,6 +977,7 @@ async def handle_dup_notdup(callback: CallbackQuery):
         return
 
     dn = bug.get("display_number") or bug_id
+    print(f"[CALLBACK] dup_notdup:{bug_id} by @{callback.from_user.username}")
     points = await _accept_bug(bug_id, bug, callback.from_user.id)
 
     # Показываем выбор доски Weeek

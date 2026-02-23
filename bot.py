@@ -28,48 +28,54 @@ async def main():
         sys.exit(1)
 
     # === Инициализация ===
-    print("🚀 Запуск Umbrella Bot...")
+    print("[STARTUP] Запуск Umbrella Bot...")
 
     # База данных
+    print("[STARTUP] Инициализация базы данных...")
     await init_db()
+    print("[STARTUP] База данных готова")
 
     # Бот
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    print("[STARTUP] Бот создан")
 
     # Логгер
     set_bot(bot)
+    print("[STARTUP] Логгер инициализирован")
 
     # Руководитель в базу
     await init_owner()
+    print("[STARTUP] Руководитель инициализирован")
 
     # Weeek
     from services.weeek_service import setup_weeek
-    print("🔗 Подключение к Weeek...")
+    print("[STARTUP] Подключение к Weeek...")
     weeek_result = await setup_weeek()
     if weeek_result.get("success"):
-        print("✅ Weeek подключён")
+        print("[STARTUP] Weeek подключён")
     else:
-        print(f"⚠️ Weeek: {weeek_result.get('error', 'не удалось подключить')} — баги будут сохраняться без Weeek")
+        print(f"[STARTUP] Weeek: {weeek_result.get('error', 'не удалось подключить')} — баги без Weeek")
 
     # Диспетчер
     dp = Dispatcher()
     dp.include_router(message_router)
     dp.include_router(callback_router)
+    print("[STARTUP] Роутеры подключены")
 
     # === Информация о старте ===
     bot_info = await bot.get_me()
-    print(f"✅ Бот: @{bot_info.username} (ID: {bot_info.id})")
-    print(f"👤 Руководитель: {OWNER_TELEGRAM_ID}")
-    print(f"💬 Группа: {GROUP_ID}")
+    print(f"[STARTUP] Бот: @{bot_info.username} (ID: {bot_info.id})")
+    print(f"[STARTUP] Руководитель: {OWNER_TELEGRAM_ID}")
+    print(f"[STARTUP] Группа: {GROUP_ID}")
 
     if DEBUG_TOPICS:
-        print("🔍 Режим отладки топиков включён")
+        print("[STARTUP] Режим отладки топиков включён")
     else:
         from config import TOPIC_IDS
-        print(f"📋 Топики: {TOPIC_IDS}")
+        print(f"[STARTUP] Топики: {TOPIC_IDS}")
 
     # === Уведомление руководителя + клавиатура смены режима ===
     try:
@@ -89,23 +95,26 @@ async def main():
             reply_markup=keyboard,
         )
     except Exception as e:
-        print(f"⚠️ Не удалось отправить сообщение руководителю: {e}")
+        print(f"[STARTUP] Не удалось отправить сообщение руководителю: {e}")
 
-    print(f"\n🟢 Бот запущен! Режим: ✅ Рабочий\n")
+    print(f"[STARTUP] Бот запущен! Режим: Рабочий")
 
     # Game receiver (HTTP-сервер для Lua-скрипта)
     from services.game_receiver import start_game_server, stop_game_server
     await start_game_server()
 
     # Запускаем polling
+    print("[STARTUP] Запуск polling...")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
     finally:
+        print("[SHUTDOWN] Остановка бота...")
         await stop_game_server()
         from services.weeek_service import close_client
         from database import close_db
         await close_client()
         await close_db()
+        print("[SHUTDOWN] Бот остановлен")
 
 
 if __name__ == "__main__":

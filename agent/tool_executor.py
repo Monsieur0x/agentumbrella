@@ -41,8 +41,10 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: 
 
     try:
         result = await _dispatch(name, args, caller_id, topic)
+        print(f"[TOOL-EXEC] {name} → OK")
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as e:
+        print(f"[TOOL-EXEC] {name} → ERROR: {e}")
         return json.dumps({"error": f"Ошибка: {str(e)}"}, ensure_ascii=False)
 
 

@@ -27,6 +27,7 @@ async def collect_bug_messages(message: Message) -> list[Message] | None:
         _buffers[user_id] = []
 
     _buffers[user_id].append(message)
+    print(f"[MEDIA] Буфер: +1 msg от user={user_id} (всего: {len(_buffers[user_id])})")
 
     if not is_first:
         return None
@@ -35,4 +36,5 @@ async def collect_bug_messages(message: Message) -> list[Message] | None:
     await asyncio.sleep(_COLLECT_DELAY)
 
     messages = _buffers.pop(user_id, [])
+    print(f"[MEDIA] Сбор завершён: {len(messages)} msgs от user={user_id}")
     return messages

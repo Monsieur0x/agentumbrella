@@ -104,16 +104,20 @@ async def _check_and_notify_owner(bug_id: int, display_number: int,
     dup_result = None
     try:
         from services.duplicate_checker import check_duplicate
+        print(f"[DUP-CHECK] Проверка бага #{bug_id}: \"{script_name[:60]}\"")
         dup_result = await check_duplicate(script_name, "")
     except Exception as e:
-        print(f"⚠️ Ошибка проверки дублей: {e}")
+        print(f"[DUP-CHECK] ERROR #{bug_id}: {e}")
 
     dup_info = None
     if dup_result and dup_result.get("is_duplicate"):
+        print(f"[DUP-CHECK] #{bug_id}: ДУБЛЬ (похож на #{dup_result.get('similar_bug_id')})")
         dup_info = {
             "similar_bug_id": dup_result.get("similar_bug_id"),
             "explanation": dup_result.get("explanation", ""),
         }
+    elif dup_result:
+        print(f"[DUP-CHECK] #{bug_id}: не дубль")
 
     return await _notify_owner(
         bug_id=bug_id, display_number=display_number,
@@ -132,6 +136,7 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
     """Обрабатывает сообщение (или несколько сообщений) в топике багов."""
     user = message.from_user
     all_messages = media_messages or [message]
+    print(f"[BUG] Новый багрепорт от @{user.username} ({len(all_messages)} msgs)")
 
     # Собираем весь текст из всех сообщений
     all_texts = []
@@ -157,11 +162,13 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
 
     # --- Всё на месте → сразу отправляем ---
     if has_video and has_file:
+        print(f"[BUG] Полный багрепорт от @{user.username}: video={has_video}, files={len(files)}")
         await _submit_bug(message, user, script_name, youtube_link,
                           files, points, media_msg_ids)
         return
 
     # --- Чего-то не хватает → одно сообщение с кнопками ---
+    print(f"[BUG] Неполный багрепорт от @{user.username}: video={has_video}, files={len(files)} → waiting_media")
     bug_id, dn = await create_bug(
         tester_id=user.id,
         message_id=message.message_id,
@@ -209,6 +216,7 @@ async def _submit_bug(message: Message, user, script_name: str,
                       youtube_link: str, files: list[dict], points: int,
                       media_message_ids: list[int] | None = None):
     """Создаёт баг и отправляет руководителю. Ответ → автоудаление."""
+    print(f"[BUG] Создание бага от @{user.username}: \"{script_name[:60]}\"")
     bug_id, display_number = await create_bug(
         tester_id=user.id,
         message_id=message.message_id,
@@ -231,11 +239,13 @@ async def _submit_bug(message: Message, user, script_name: str,
     )
 
     if success:
+        print(f"[BUG] #{display_number} отправлен руководителю")
         await _reply_and_delete(
             message,
             f"🐛 Баг <b>#{display_number}</b> отправлен на подтверждение ⏳",
         )
     else:
+        print(f"[BUG] #{display_number} НЕ УДАЛОСЬ уведомить руководителя")
         await _reply_and_delete(
             message,
             f"⚠️ Баг <b>#{display_number}</b> сохранён, но не удалось уведомить руководителя.",
@@ -257,6 +267,7 @@ async def handle_file_followup(message: Message, bug_id: int):
     bug = await get_bug(bug_id)
     if not bug or bug["status"] != "waiting_media":
         return
+    print(f"[BUG] #{bug_id} followup файл ({file_type}) от user={message.from_user.id}")
 
     new_file = {"file_id": file_id, "file_type": file_type}
     existing_files = _get_bug_files(bug)
@@ -280,13 +291,13 @@ async def handle_video_followup(message: Message, bug_id: int):
     bug = await get_bug(bug_id)
     if not bug or bug["status"] != "waiting_media":
         return
+    print(f"[BUG] #{bug_id} followup видео от user={message.from_user.id}: {youtube_link}")
 
     existing_ids = bug.get("media_message_ids", [])
     if message.message_id not in existing_ids:
         existing_ids.append(message.message_id)
 
     await update_bug(bug_id, youtube_link=youtube_link, media_message_ids=existing_ids)
-    # Не отвечаем — тестер ещё не нажал «Готово»
 
 
 async def submit_bug_as_is(bug_id: int) -> bool:
@@ -295,6 +306,7 @@ async def submit_bug_as_is(bug_id: int) -> bool:
     if not bug or bug["status"] != "waiting_media":
         return False
 
+    print(f"[BUG] #{bug_id} отправка как есть (по кнопке)")
     await update_bug(bug_id, status="pending")
 
     tester = await get_tester_by_id(bug["tester_id"])
@@ -456,5 +468,5 @@ async def _notify_owner(bug_id: int, script_name: str,
         return True
 
     except Exception as e:
-        print(f"❌ Не удалось уведомить руководителя о баге #{dn}: {e}")
+        print(f"[BUG] ERROR: не удалось уведомить руководителя о баге #{dn}: {e}")
         return False
