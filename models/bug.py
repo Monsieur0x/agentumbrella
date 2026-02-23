@@ -11,7 +11,8 @@ async def create_bug(tester_id: int, message_id: int,
                      file_type: str = "",
                      files: list[dict] | None = None,
                      bug_type: str = "bug",
-                     points: int = 0, status: str = "pending") -> tuple[int, int]:
+                     points: int = 0, status: str = "pending",
+                     media_message_ids: list[int] | None = None) -> tuple[int, int]:
     """Создаёт баг, возвращает (ID, display_number).
 
     files — список {"file_id": ..., "file_type": ...}.
@@ -52,6 +53,7 @@ async def create_bug(tester_id: int, message_id: int,
             "weeek_column_name": None,
             "display_number": dn,
             "bot_message_id": None,
+            "media_message_ids": media_message_ids or [],
         }
         if "items" not in data:
             data["items"] = {}

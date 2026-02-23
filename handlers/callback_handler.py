@@ -49,6 +49,31 @@ async def _safe_edit(callback: CallbackQuery, text: str, reply_markup=None):
         )
 
 
+async def _set_bug_reactions(bug: dict, emoji: str):
+    """Ставит реакцию на все сообщения тестера по багу в топике багов."""
+    from aiogram.types import ReactionTypeEmoji
+    from config import GROUP_ID
+    bot = get_bot()
+    if not bot or not GROUP_ID:
+        return
+
+    msg_ids = set()
+    if bug.get("message_id"):
+        msg_ids.add(bug["message_id"])
+    for mid in bug.get("media_message_ids", []):
+        msg_ids.add(mid)
+
+    for mid in msg_ids:
+        try:
+            await bot.set_message_reaction(
+                chat_id=GROUP_ID,
+                message_id=mid,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+            )
+        except Exception:
+            pass
+
+
 async def _add_points_log(tester_id: int, amount: int, reason: str, source: str = "manual", admin_id: int = None):
     """Добавляет запись в лог баллов."""
     def updater(data):
@@ -111,6 +136,7 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
     dn = bug.get("display_number") or bug_id
 
     await update_bug(bug_id, status="accepted")
+    await _set_bug_reactions(bug, "✅")
     await update_tester_points(bug["tester_id"], points)
     await update_tester_stats(bug["tester_id"], bugs=1)
 
@@ -307,6 +333,7 @@ async def handle_bug_reject(callback: CallbackQuery):
     dn = bug.get("display_number") or bug_id
 
     await update_bug(bug_id, status="rejected")
+    await _set_bug_reactions(bug, "❌")
 
     # Уведомляем тестера
     bot = get_bot()
@@ -887,6 +914,7 @@ async def handle_dup_confirm(callback: CallbackQuery):
 
     dn = bug.get("display_number") or bug_id
     await mark_duplicate(bug_id)
+    await _set_bug_reactions(bug, "❌")
 
     # Уведомляем тестера
     bot = get_bot()

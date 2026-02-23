@@ -153,11 +153,12 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
 
     has_video = bool(youtube_link)
     has_file = len(files) > 0
+    media_msg_ids = [msg.message_id for msg in all_messages]
 
     # --- Всё на месте → сразу отправляем ---
     if has_video and has_file:
         await _submit_bug(message, user, script_name, youtube_link,
-                          files, points)
+                          files, points, media_msg_ids)
         return
 
     # --- Чего-то не хватает → одно сообщение с кнопками ---
@@ -170,6 +171,7 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
         bug_type="bug",
         points=points,
         status="waiting_media",
+        media_message_ids=media_msg_ids,
     )
 
     # Описание того, чего не хватает
@@ -204,7 +206,8 @@ async def handle_bug_report(message: Message, media_messages: list[Message] | No
 
 
 async def _submit_bug(message: Message, user, script_name: str,
-                      youtube_link: str, files: list[dict], points: int):
+                      youtube_link: str, files: list[dict], points: int,
+                      media_message_ids: list[int] | None = None):
     """Создаёт баг и отправляет руководителю. Ответ → автоудаление."""
     bug_id, display_number = await create_bug(
         tester_id=user.id,
@@ -215,6 +218,7 @@ async def _submit_bug(message: Message, user, script_name: str,
         bug_type="bug",
         points=points,
         status="pending",
+        media_message_ids=media_message_ids,
     )
 
     username = user.username or user.full_name or str(user.id)
@@ -258,7 +262,11 @@ async def handle_file_followup(message: Message, bug_id: int):
     existing_files = _get_bug_files(bug)
     all_files = existing_files + [new_file]
 
-    await update_bug(bug_id, file_id=file_id, file_type=file_type, files=all_files)
+    existing_ids = bug.get("media_message_ids", [])
+    if message.message_id not in existing_ids:
+        existing_ids.append(message.message_id)
+
+    await update_bug(bug_id, file_id=file_id, file_type=file_type, files=all_files, media_message_ids=existing_ids)
     # Не отвечаем — тестер ещё не нажал «Готово»
 
 
@@ -273,7 +281,11 @@ async def handle_video_followup(message: Message, bug_id: int):
     if not bug or bug["status"] != "waiting_media":
         return
 
-    await update_bug(bug_id, youtube_link=youtube_link)
+    existing_ids = bug.get("media_message_ids", [])
+    if message.message_id not in existing_ids:
+        existing_ids.append(message.message_id)
+
+    await update_bug(bug_id, youtube_link=youtube_link, media_message_ids=existing_ids)
     # Не отвечаем — тестер ещё не нажал «Готово»
 
 
