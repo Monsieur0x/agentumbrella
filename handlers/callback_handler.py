@@ -308,7 +308,7 @@ async def handle_bug_confirm(callback: CallbackQuery):
     await _show_board_selection(callback, bug_id)
     await callback.answer(f"Баг #{dn} подтверждён, +{points} б.")
     await log_info(
-        f"Баг #{dn} подтверждён руководителем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} подтверждён руководителем {callback.from_user.username}, +{points} б."
     )
 
 
@@ -352,10 +352,10 @@ async def handle_bug_reject(callback: CallbackQuery):
 
     await _safe_edit(
         callback,
-        _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> (@{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> ({callback.from_user.username})",
     )
     await callback.answer(f"Баг #{dn} отклонён")
-    await log_info(f"Баг #{dn} отклонён руководителем @{callback.from_user.username}")
+    await log_info(f"Баг #{dn} отклонён руководителем {callback.from_user.username}")
 
 
 async def _show_board_selection(callback: CallbackQuery, bug_id: int):
@@ -639,7 +639,7 @@ async def handle_task_publish(callback: CallbackQuery):
         except Exception:
             pass
     await callback.answer("Задание опубликовано")
-    await log_info(f"Задание #{task_id} опубликовано @{callback.from_user.username}")
+    await log_info(f"Задание #{task_id} опубликовано {callback.from_user.username}")
 
 
 @router.callback_query(F.data.startswith("task_cancel:"))
@@ -675,7 +675,7 @@ async def handle_task_cancel(callback: CallbackQuery):
         except Exception:
             pass
     await callback.answer("Задание отменено")
-    await log_info(f"Задание #{task_id} отменено @{callback.from_user.username}")
+    await log_info(f"Задание #{task_id} отменено {callback.from_user.username}")
 
 
 # ─────────────────────────────────────────────
@@ -717,7 +717,7 @@ async def handle_rating_publish(callback: CallbackQuery):
             except Exception:
                 pass
         await callback.answer("Рейтинг опубликован")
-        await log_admin(f"Рейтинг опубликован в топик «Топ» (@{callback.from_user.username})")
+        await log_admin(f"Рейтинг опубликован в топик «Топ» ({callback.from_user.username})")
     else:
         await callback.answer("Ошибка публикации", show_alert=True)
 
@@ -847,7 +847,7 @@ async def handle_reward_val(callback: CallbackQuery):
 
     await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=keyboard)
     await callback.answer(f"{label}: {value} б.")
-    await log_info(f"Награда {reward_type} изменена на {value} (@{callback.from_user.username})")
+    await log_info(f"Награда {reward_type} изменена на {value} ({callback.from_user.username})")
 
 
 @router.callback_query(F.data.startswith("reward_custom:"))
@@ -933,10 +933,10 @@ async def handle_dup_confirm(callback: CallbackQuery):
 
     await _safe_edit(
         callback,
-        _safe_html_text(callback) + f"\n\n🔄 <b>Дубль</b> (решил @{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n🔄 <b>Дубль</b> (решил {callback.from_user.username})",
     )
     await callback.answer("Баг помечен как дубль")
-    await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
+    await log_info(f"Баг #{dn} помечен как дубль ({callback.from_user.username})")
 
 
 @router.callback_query(F.data.startswith("dup_notdup:"))
@@ -963,7 +963,7 @@ async def handle_dup_notdup(callback: CallbackQuery):
     await _show_board_selection(callback, bug_id)
     await callback.answer(f"Не дубль — баг #{dn} принят, +{points} б.")
     await log_info(
-        f"Баг #{dn} — не дубль, принят руководителем @{callback.from_user.username}, +{points} б."
+        f"Баг #{dn} — не дубль, принят руководителем {callback.from_user.username}, +{points} б."
     )
 
 
@@ -985,10 +985,10 @@ async def handle_dup_yes(callback: CallbackQuery):
 
     await _safe_edit(
         callback,
-        _safe_html_text(callback) + f"\n\n✅ <b>Решение:</b> дубль (подтвердил @{callback.from_user.username})",
+        _safe_html_text(callback) + f"\n\n✅ <b>Решение:</b> дубль (подтвердил {callback.from_user.username})",
     )
     await callback.answer("Баг помечен как дубль")
-    await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
+    await log_info(f"Баг #{dn} помечен как дубль ({callback.from_user.username})")
 
 
 @router.callback_query(F.data.startswith("dup_no:"))
@@ -1031,11 +1031,11 @@ async def handle_dup_no(callback: CallbackQuery):
         callback,
         _safe_html_text(callback) + (
             f"\n\n✅ <b>Решение:</b> принят, +{points} б. "
-            f"(@{callback.from_user.username}){weeek_info}"
+            f"({callback.from_user.username}){weeek_info}"
         ),
     )
     await callback.answer(f"Баг #{dn} принят, +{points} баллов")
-    await log_admin(f"Баг #{dn} принят (не дубль) @{callback.from_user.username}, +{points} б.")
+    await log_admin(f"Баг #{dn} принят (не дубль) {callback.from_user.username}, +{points} б.")
 
 
 @router.callback_query(F.data.startswith("weeek:"))

@@ -452,7 +452,7 @@ async def _handle_pending_reward_input(message: Message, user) -> bool:
         f"✅ {label}: <b>{value}</b> б.",
         parse_mode="HTML",
     )
-    await log_info(f"Награда {reward_type} изменена на {value} (@{user.username})")
+    await log_info(f"Награда {reward_type} изменена на {value} ({user.username})")
     return True
 
 
