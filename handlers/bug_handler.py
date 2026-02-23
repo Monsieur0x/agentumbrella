@@ -103,27 +103,26 @@ async def _check_and_notify_owner(bug_id: int, display_number: int,
 
 
 async def handle_bug_report(message: Message, media_messages: list[Message] | None = None):
-    """Обрабатывает сообщение (или медиагруппу) в топике багов.
+    """Обрабатывает сообщение (или несколько сообщений) в топике багов.
 
-    media_messages — все сообщения медиагруппы (если есть).
+    media_messages — все собранные сообщения от тестера (если несколько).
     """
     user = message.from_user
-    text = message.caption or message.text or ""
-
-    # Если пришла медиагруппа, берём caption из любого сообщения
-    if media_messages and len(media_messages) > 1:
-        for msg in media_messages:
-            t = msg.caption or msg.text or ""
-            if t:
-                text = t
-                break
-
-    # Извлекаем данные
-    youtube_link = _extract_youtube_link(text)
-    script_name = _extract_script_name(text)
-
-    # Собираем файлы из всех сообщений медиагруппы
     all_messages = media_messages or [message]
+
+    # Собираем весь текст из всех сообщений
+    all_texts = []
+    for msg in all_messages:
+        t = msg.caption or msg.text or ""
+        if t.strip():
+            all_texts.append(t.strip())
+    combined_text = " ".join(all_texts) if all_texts else ""
+
+    # Извлекаем данные из объединённого текста
+    youtube_link = _extract_youtube_link(combined_text)
+    script_name = _extract_script_name(combined_text)
+
+    # Собираем файлы из всех сообщений
     files = _collect_files(all_messages)
 
     await get_or_create_tester(user.id, user.username, user.full_name)

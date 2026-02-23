@@ -169,43 +169,41 @@ async def handle_group_message(message: Message, bot: Bot):
     # Топик «Баги» → #баг, файл для ожидающего бага, или видео-ссылка
     if topic == "bugs":
         from handlers.bug_handler import handle_bug_report, handle_file_followup, handle_video_followup
-        from utils.media_group import collect_media_group
+        from utils.media_group import collect_bug_messages
 
         file_present = bool(message.document or message.video or message.photo or message.video_note)
 
-        # --- Медиагруппа: собираем все сообщения ---
-        if message.media_group_id:
-            group = await collect_media_group(message)
-            if group is None:
-                # Не первое сообщение в группе — уже обработается
+        # --- Сообщение с #баг: буферизуем все сообщения от тестера ---
+        # Telegram может разбить текст + скрин + файл на отдельные сообщения,
+        # поэтому ждём ~1.5 сек и собираем всё вместе.
+        if has_hashtag_bug or file_present:
+            collected = await collect_bug_messages(message)
+            if collected is None:
+                # Не первое сообщение — уже обработается первым
                 return
 
-            # Берём caption из любого сообщения группы
-            group_text = ""
-            for msg in group:
-                t = msg.caption or msg.text or ""
-                if t:
-                    group_text = t
+            # Проверяем: есть ли #баг в любом из собранных сообщений
+            collected_has_bug = False
+            for msg in collected:
+                t = (msg.text or msg.caption or "").lower()
+                if "#баг" in t:
+                    collected_has_bug = True
                     break
-            group_has_bug = "#баг" in group_text.lower()
 
-            if group_has_bug:
-                await handle_bug_report(group[0], media_messages=group)
+            if collected_has_bug:
+                await handle_bug_report(collected[0], media_messages=collected)
                 return
-            # Медиагруппа без #баг — может быть followup файл
-            file_present = True
 
-        # Проверяем: может тестер присылает файл для бага в статусе waiting_file
-        if file_present:
-            bugs_data = await async_load(BUGS_FILE)
-            items = bugs_data.get("items", {})
-            # Ищем последний баг тестера в статусе waiting_file
-            waiting = [b for b in items.values()
-                       if b.get("tester_id") == user.id and b.get("status") == "waiting_file"]
-            if waiting:
-                waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
-                await handle_file_followup(message, waiting[0]["id"])
-                return
+            # Нет #баг — проверяем followup для waiting_file
+            if any(bool(m.document or m.video or m.photo or m.video_note) for m in collected):
+                bugs_data = await async_load(BUGS_FILE)
+                items = bugs_data.get("items", {})
+                waiting = [b for b in items.values()
+                           if b.get("tester_id") == user.id and b.get("status") == "waiting_file"]
+                if waiting:
+                    waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
+                    await handle_file_followup(collected[0], waiting[0]["id"])
+                    return
 
         # Проверяем: может тестер присылает видео-ссылку для бага в статусе waiting_video
         if not has_hashtag_bug:
