@@ -29,7 +29,24 @@ router = Router()
 
 def _safe_html_text(callback: CallbackQuery) -> str:
     """Возвращает html_text сообщения, безопасный для конкатенации с HTML."""
-    return callback.message.html_text or html.escape(callback.message.text or "")
+    msg = callback.message
+    # Для медиа-сообщений текст хранится в caption
+    if msg.caption is not None:
+        return msg.html_text if msg.text else html.escape(msg.caption)
+    return msg.html_text or html.escape(msg.text or "")
+
+
+async def _safe_edit(callback: CallbackQuery, text: str, reply_markup=None):
+    """Редактирует сообщение: edit_caption для медиа, edit_text для текста."""
+    msg = callback.message
+    if msg.photo or msg.video or msg.document:
+        await msg.edit_caption(
+            caption=text, parse_mode="HTML", reply_markup=reply_markup,
+        )
+    else:
+        await msg.edit_text(
+            text=text, parse_mode="HTML", reply_markup=reply_markup,
+        )
 
 
 async def _add_points_log(tester_id: int, amount: int, reason: str, source: str = "manual", admin_id: int = None):
@@ -296,10 +313,9 @@ async def handle_bug_reject(callback: CallbackQuery):
         except Exception:
             pass
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + f"\n\n❌ <b>Отклонён</b> (@{callback.from_user.username})",
-        parse_mode="HTML",
-        reply_markup=None,
     )
     await callback.answer(f"Баг #{dn} отклонён")
     await log_info(f"Баг #{dn} отклонён владельцем @{callback.from_user.username}")
@@ -313,10 +329,9 @@ async def _show_board_selection(callback: CallbackQuery, bug_id: int):
     boards = get_cached_boards() if config.WEEEK_ENABLED else []
     if not boards:
         weeek_note = "Weeek отключён" if not config.WEEEK_ENABLED else "Weeek не настроен"
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             _safe_html_text(callback) + f"\n\n✅ <b>Подтверждён</b> ({weeek_note})",
-            parse_mode="HTML",
-            reply_markup=None,
         )
         return
 
@@ -337,9 +352,9 @@ async def _show_board_selection(callback: CallbackQuery, bug_id: int):
         callback_data=f"weeek_skip:{bug_id}",
     )])
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + "\n\n✅ <b>Подтверждён!</b> Выберите доску Weeek:",
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
@@ -455,34 +470,32 @@ async def _create_weeek_task_and_finish(
 
         await update_bug(bug_id, weeek_task_id=task_id, weeek_board_name=board_name, weeek_column_name=col_name)
 
-        # Прикрепляем файл из Telegram к задаче Weeek
-        file_id = bug.get("file_id")
-        file_type = bug.get("file_type")
-        if file_id and task_id:
-            try:
-                bot = get_bot()
-                from io import BytesIO
+        # Прикрепляем файлы из Telegram к задаче Weeek
+        from handlers.bug_handler import _get_bug_files
+        bug_files = _get_bug_files(bug)
+        if bug_files and task_id:
+            bot = get_bot()
+            from io import BytesIO
+            ext_map = {"photo": ".jpg", "video": ".mp4", "document": ""}
+            for f in bug_files:
+                try:
+                    tg_file = await bot.get_file(f["file_id"])
+                    buffer = BytesIO()
+                    await bot.download_file(tg_file.file_path, buffer)
+                    file_bytes = buffer.getvalue()
 
-                tg_file = await bot.get_file(file_id)
-                buffer = BytesIO()
-                await bot.download_file(tg_file.file_path, buffer)
-                file_bytes = buffer.getvalue()
+                    if tg_file.file_path:
+                        filename = tg_file.file_path.split("/")[-1]
+                    else:
+                        filename = f"bug_{bug_id}{ext_map.get(f.get('file_type', ''), '')}"
 
-                # Определяем имя файла
-                ext_map = {"photo": ".jpg", "video": ".mp4", "document": ""}
-                if tg_file.file_path:
-                    filename = tg_file.file_path.split("/")[-1]
-                else:
-                    filename = f"bug_{bug_id}{ext_map.get(file_type, '')}"
+                    await upload_attachment(task_id, file_bytes, filename)
+                except Exception as e:
+                    print(f"⚠️ Не удалось прикрепить файл к задаче Weeek #{task_id}: {e}")
 
-                await upload_attachment(task_id, file_bytes, filename)
-            except Exception as e:
-                print(f"⚠️ Не удалось прикрепить файл к задаче Weeek #{task_id}: {e}")
-
-        await callback.message.edit_text(
+        await _safe_edit(
+            callback,
             _safe_html_text(callback) + f"\n\n📋 Отправлен в Weeek: <b>«{html.escape(board_name)}»</b> ✅",
-            parse_mode="HTML",
-            reply_markup=None,
         )
         await callback.answer(f"Задача создана в {board_name}")
     else:
@@ -498,10 +511,9 @@ async def handle_weeek_skip(callback: CallbackQuery):
         await callback.answer("Только владелец", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + "\n\n⏭ Не отправлен в Weeek",
-        parse_mode="HTML",
-        reply_markup=None,
     )
     await callback.answer("Пропущено")
 
@@ -881,10 +893,9 @@ async def handle_dup_confirm(callback: CallbackQuery):
         except Exception:
             pass
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + f"\n\n🔄 <b>Дубль</b> (решил @{callback.from_user.username})",
-        parse_mode="HTML",
-        reply_markup=None,
     )
     await callback.answer("Баг помечен как дубль")
     await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
@@ -934,9 +945,9 @@ async def handle_dup_yes(callback: CallbackQuery):
     dn = bug.get("display_number") or bug_id
     await mark_duplicate(bug_id)
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + f"\n\n✅ <b>Решение:</b> дубль (подтвердил @{callback.from_user.username})",
-        parse_mode="HTML",
     )
     await callback.answer("Баг помечен как дубль")
     await log_info(f"Баг #{dn} помечен как дубль (@{callback.from_user.username})")
@@ -978,12 +989,12 @@ async def handle_dup_no(callback: CallbackQuery):
     )
     weeek_info = " + Weeek ✅" if weeek_result.get("success") else ""
 
-    await callback.message.edit_text(
+    await _safe_edit(
+        callback,
         _safe_html_text(callback) + (
             f"\n\n✅ <b>Решение:</b> принят, +{points} б. "
             f"(@{callback.from_user.username}){weeek_info}"
         ),
-        parse_mode="HTML",
     )
     await callback.answer(f"Баг #{dn} принят, +{points} баллов")
     await log_admin(f"Баг #{dn} принят (не дубль) @{callback.from_user.username}, +{points} б.")

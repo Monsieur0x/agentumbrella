@@ -9,10 +9,21 @@ async def create_bug(tester_id: int, message_id: int,
                      script_name: str = "", steps: str = "",
                      youtube_link: str = "", file_id: str = "",
                      file_type: str = "",
+                     files: list[dict] | None = None,
                      bug_type: str = "bug",
                      points: int = 0, status: str = "pending") -> tuple[int, int]:
-    """Создаёт баг, возвращает (ID, display_number)."""
+    """Создаёт баг, возвращает (ID, display_number).
+
+    files — список {"file_id": ..., "file_type": ...}.
+    Если передан files, он имеет приоритет над file_id/file_type.
+    """
     result = {}
+
+    # Собираем список файлов
+    if files is None and file_id:
+        files = [{"file_id": file_id, "file_type": file_type}]
+    elif files is None:
+        files = []
 
     def updater(data):
         bug_id = data.get("next_id", 1)
@@ -34,8 +45,9 @@ async def create_bug(tester_id: int, message_id: int,
             "script_name": script_name,
             "steps": steps,
             "youtube_link": youtube_link,
-            "file_id": file_id,
-            "file_type": file_type,
+            "file_id": files[0]["file_id"] if files else "",
+            "file_type": files[0]["file_type"] if files else "",
+            "files": files,
             "weeek_board_name": None,
             "weeek_column_name": None,
             "display_number": dn,

@@ -169,8 +169,31 @@ async def handle_group_message(message: Message, bot: Bot):
     # Топик «Баги» → #баг, файл для ожидающего бага, или видео-ссылка
     if topic == "bugs":
         from handlers.bug_handler import handle_bug_report, handle_file_followup, handle_video_followup
+        from utils.media_group import collect_media_group
 
         file_present = bool(message.document or message.video or message.photo or message.video_note)
+
+        # --- Медиагруппа: собираем все сообщения ---
+        if message.media_group_id:
+            group = await collect_media_group(message)
+            if group is None:
+                # Не первое сообщение в группе — уже обработается
+                return
+
+            # Берём caption из любого сообщения группы
+            group_text = ""
+            for msg in group:
+                t = msg.caption or msg.text or ""
+                if t:
+                    group_text = t
+                    break
+            group_has_bug = "#баг" in group_text.lower()
+
+            if group_has_bug:
+                await handle_bug_report(group[0], media_messages=group)
+                return
+            # Медиагруппа без #баг — может быть followup файл
+            file_present = True
 
         # Проверяем: может тестер присылает файл для бага в статусе waiting_file
         if file_present:
