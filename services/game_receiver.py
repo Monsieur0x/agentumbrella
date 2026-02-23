@@ -19,6 +19,7 @@ _runner: web.AppRunner | None = None
 _GAMEMODE_POINTS_KEY = {
     "DOTA_GAMEMODE_AP": "game_ap",
     "DOTA_GAMEMODE_TURBO": "game_turbo",
+    "DOTA_GAMEMODE_SD": "game_ap",
 }
 
 
