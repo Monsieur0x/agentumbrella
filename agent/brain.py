@@ -196,9 +196,19 @@ async def _throttle():
 
 
 async def _call_claude(**kwargs):
-    """Обёртка с throttle."""
-    await _throttle()
-    return await client.messages.create(**kwargs)
+    """Обёртка с throttle и retry при перегрузке."""
+    max_retries = 3
+    for attempt in range(max_retries):
+        await _throttle()
+        try:
+            return await client.messages.create(**kwargs)
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < max_retries - 1:
+                wait = 2 ** attempt * 2  # 2s, 4s, 8s
+                print(f"⏳ Claude API перегружен (529), повтор через {wait}с...")
+                await asyncio.sleep(wait)
+            else:
+                raise
 
 
 async def process_message(text: str, username: str, role: str, topic: str,
