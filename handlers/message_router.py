@@ -3,6 +3,7 @@
 
 Это главный обработчик всех входящих сообщений.
 """
+import re
 import time
 import html
 from aiogram import Router, F, Bot
@@ -172,6 +173,25 @@ async def handle_group_message(message: Message, bot: Bot):
         from utils.media_group import collect_bug_messages
 
         file_present = bool(message.document or message.video or message.photo or message.video_note)
+        msg_text = message.text or message.caption or ""
+        has_youtube = bool(re.search(
+            r'https?://(?:www\.)?(?:youtube\.com|youtu\.be)/', msg_text, re.IGNORECASE
+        )) if msg_text else False
+
+        # --- Проверяем: тестер добавляет материалы к ожидающему багу ---
+        if not has_hashtag_bug and (file_present or has_youtube):
+            bugs_data = await async_load(BUGS_FILE)
+            items = bugs_data.get("items", {})
+            waiting = [b for b in items.values()
+                       if b.get("tester_id") == user.id and b.get("status") == "waiting_media"]
+            if waiting:
+                waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
+                bug_id = waiting[0]["id"]
+                if file_present:
+                    await handle_file_followup(message, bug_id)
+                if has_youtube:
+                    await handle_video_followup(message, bug_id)
+                return
 
         # --- Сообщение с #баг: буферизуем все сообщения от тестера ---
         # Telegram может разбить текст + скрин + файл на отдельные сообщения,
@@ -192,28 +212,6 @@ async def handle_group_message(message: Message, bot: Bot):
 
             if collected_has_bug:
                 await handle_bug_report(collected[0], media_messages=collected)
-                return
-
-            # Нет #баг — проверяем followup для waiting_file
-            if any(bool(m.document or m.video or m.photo or m.video_note) for m in collected):
-                bugs_data = await async_load(BUGS_FILE)
-                items = bugs_data.get("items", {})
-                waiting = [b for b in items.values()
-                           if b.get("tester_id") == user.id and b.get("status") == "waiting_file"]
-                if waiting:
-                    waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
-                    await handle_file_followup(collected[0], waiting[0]["id"])
-                    return
-
-        # Проверяем: может тестер присылает видео-ссылку для бага в статусе waiting_video
-        if not has_hashtag_bug:
-            bugs_data = await async_load(BUGS_FILE)
-            items = bugs_data.get("items", {})
-            waiting = [b for b in items.values()
-                       if b.get("tester_id") == user.id and b.get("status") == "waiting_video"]
-            if waiting:
-                waiting.sort(key=lambda b: b.get("id", 0), reverse=True)
-                await handle_video_followup(message, waiting[0]["id"])
                 return
 
         if has_hashtag_bug:

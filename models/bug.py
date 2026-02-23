@@ -51,6 +51,7 @@ async def create_bug(tester_id: int, message_id: int,
             "weeek_board_name": None,
             "weeek_column_name": None,
             "display_number": dn,
+            "bot_message_id": None,
         }
         if "items" not in data:
             data["items"] = {}

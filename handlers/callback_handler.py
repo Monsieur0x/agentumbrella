@@ -136,111 +136,121 @@ async def _accept_bug(bug_id: int, bug: dict, admin_id: int) -> int:
 
 
 # ─────────────────────────────────────────────
-#  Тестер: отправить без файла / прикрепить файл
+#  Тестер: добавить материалы / отправить как есть
 # ─────────────────────────────────────────────
 
-async def _handle_bug_skip(callback: CallbackQuery):
-    """Общая логика для кнопок bug_skip_*."""
+async def _validate_bug_button(callback: CallbackQuery) -> int | None:
+    """Проверяет кнопку тестера: баг существует, waiting_media, его баг."""
     bug_id = int(callback.data.split(":")[1])
     bug = await get_bug(bug_id)
     if not bug:
         await callback.answer("Баг не найден", show_alert=True)
         return None
-
     if bug["status"] != "waiting_media":
         await callback.answer("Баг уже обработан", show_alert=True)
         return None
-
     if callback.from_user.id != bug["tester_id"]:
         await callback.answer("Это не твой баг", show_alert=True)
         return None
-
     return bug_id
 
 
-@router.callback_query(F.data.startswith("bug_skip_video:"))
-async def handle_bug_skip_video(callback: CallbackQuery):
-    """Без видео — если файл уже есть, отправляем; иначе ждём файл."""
-    bug_id = await _handle_bug_skip(callback)
+@router.callback_query(F.data.startswith("bug_add_media:"))
+async def handle_bug_add_media(callback: CallbackQuery):
+    """Тестер хочет добавить материалы — бот ждёт файлы/ссылки, потом «Готово»."""
+    bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id
-    if bug.get("file_id"):
-        # Файл уже есть → отправляем
-        from handlers.bug_handler import submit_bug_as_is
-        success = await submit_bug_as_is(bug_id)
-        if success:
-            await callback.message.edit_text(
-                f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
-                parse_mode="HTML", reply_markup=None,
-            )
-            await callback.answer("Баг отправлен")
-        else:
-            await callback.answer("Не удалось отправить баг", show_alert=True)
-    else:
-        # Файла нет → ждём файл
-        await update_bug(bug_id, status="waiting_file")
-        await callback.message.edit_text(
-            f"📎 Отправь файл в этот топик — он прикрепится к багу <b>#{dn}</b>.",
-            parse_mode="HTML", reply_markup=None,
-        )
-        await callback.answer()
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="✅ Готово",
+            callback_data=f"bug_send:{bug_id}",
+        )],
+    ])
+
+    await callback.message.edit_text(
+        f"⏳ Баг <b>#{dn}</b>: жду материалы.\n"
+        f"Отправь файлы, скрины или ссылку на видео, потом нажми <b>«Готово»</b>.",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+    await callback.answer()
 
 
-@router.callback_query(F.data.startswith("bug_skip_file:"))
-async def handle_bug_skip_file(callback: CallbackQuery):
-    """Без файла — если видео уже есть, отправляем; иначе ждём видео-ссылку."""
-    bug_id = await _handle_bug_skip(callback)
+@router.callback_query(F.data.startswith("bug_send:"))
+async def handle_bug_send(callback: CallbackQuery):
+    """Тестер нажал «Готово» — отправляем баг владельцу."""
+    bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id
-    if bug.get("youtube_link"):
-        # Видео уже есть → отправляем
-        from handlers.bug_handler import submit_bug_as_is
-        success = await submit_bug_as_is(bug_id)
-        if success:
-            await callback.message.edit_text(
-                f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
-                parse_mode="HTML", reply_markup=None,
-            )
-            await callback.answer("Баг отправлен")
-        else:
-            await callback.answer("Не удалось отправить баг", show_alert=True)
-    else:
-        # Видео нет → ждём ссылку
-        await update_bug(bug_id, status="waiting_video")
+
+    from handlers.bug_handler import submit_bug_as_is, _delete_after
+    success = await submit_bug_as_is(bug_id)
+
+    if success:
         await callback.message.edit_text(
-            f"🎥 Отправь ссылку на видео (YouTube) в этот топик — она прикрепится к багу <b>#{dn}</b>.",
+            f"🐛 Баг <b>#{dn}</b> отправлен на подтверждение ⏳",
             parse_mode="HTML", reply_markup=None,
         )
-        await callback.answer()
+        await callback.answer("Баг отправлен")
+    else:
+        await callback.message.edit_text(
+            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить владельца.",
+            parse_mode="HTML", reply_markup=None,
+        )
+        await callback.answer("Ошибка отправки", show_alert=True)
+
+    # Автоудаление через 5 сек
+    import asyncio
+    from utils.logger import get_bot
+    bot = get_bot()
+    if bot:
+        asyncio.create_task(_delete_after(
+            bot, callback.message.chat.id, callback.message.message_id, 5,
+        ))
 
 
 @router.callback_query(F.data.startswith("bug_skip_both:"))
 async def handle_bug_skip_both(callback: CallbackQuery):
-    """Без видео и файла — сразу отправляем."""
-    bug_id = await _handle_bug_skip(callback)
+    """Отправить как есть — без недостающих материалов."""
+    bug_id = await _validate_bug_button(callback)
     if bug_id is None:
         return
 
     bug = await get_bug(bug_id)
     dn = bug.get("display_number") or bug_id if bug else bug_id
 
-    from handlers.bug_handler import submit_bug_as_is
+    from handlers.bug_handler import submit_bug_as_is, _delete_after
     success = await submit_bug_as_is(bug_id)
 
     if success:
         await callback.message.edit_text(
-            f"🐛 Баг <b>#{dn}</b> отправлен владельцу на подтверждение ⏳",
+            f"🐛 Баг <b>#{dn}</b> отправлен на подтверждение ⏳",
             parse_mode="HTML", reply_markup=None,
         )
         await callback.answer("Баг отправлен")
     else:
-        await callback.answer("Не удалось отправить баг", show_alert=True)
+        await callback.message.edit_text(
+            f"⚠️ Баг <b>#{dn}</b> сохранён, но не удалось уведомить владельца.",
+            parse_mode="HTML", reply_markup=None,
+        )
+        await callback.answer("Ошибка отправки", show_alert=True)
+
+    # Автоудаление через 5 сек
+    import asyncio
+    from utils.logger import get_bot
+    bot = get_bot()
+    if bot:
+        asyncio.create_task(_delete_after(
+            bot, callback.message.chat.id, callback.message.message_id, 5,
+        ))
 
 
 # ─────────────────────────────────────────────
