@@ -571,9 +571,10 @@ async def handle_private_message(message: Message, bot: Bot):
     if role in ("owner", "admin") and message.text.startswith("!"):
         text_to_send = message.text[1:].strip()
         if text_to_send:
+            general_thread = TOPIC_IDS.get("general") or None
             await bot.send_message(
                 chat_id=GROUP_ID,
-                message_thread_id=TOPIC_IDS["general"],
+                message_thread_id=general_thread,
                 text=text_to_send,
             )
             await message.answer("✅ Отправлено в General.")
