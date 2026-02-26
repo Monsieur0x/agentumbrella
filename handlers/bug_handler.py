@@ -100,31 +100,12 @@ async def _check_and_notify_owner(bug_id: int, display_number: int,
                                   script_name: str, youtube_link: str,
                                   files: list[dict],
                                   username: str, points: int) -> bool:
-    """Проверяет на дубли и уведомляет руководителя. Возвращает True при успехе."""
-    dup_result = None
-    try:
-        from services.duplicate_checker import check_duplicate
-        print(f"[DUP-CHECK] Проверка бага #{bug_id}: \"{script_name[:60]}\"")
-        dup_result = await check_duplicate(script_name, "")
-    except Exception as e:
-        print(f"[DUP-CHECK] ERROR #{bug_id}: {e}")
-
-    dup_info = None
-    if dup_result and dup_result.get("is_duplicate"):
-        print(f"[DUP-CHECK] #{bug_id}: ДУБЛЬ (похож на #{dup_result.get('similar_bug_id')})")
-        dup_info = {
-            "similar_bug_id": dup_result.get("similar_bug_id"),
-            "explanation": dup_result.get("explanation", ""),
-        }
-    elif dup_result:
-        print(f"[DUP-CHECK] #{bug_id}: не дубль")
-
+    """Уведомляет руководителя о новом баге. Возвращает True при успехе."""
     return await _notify_owner(
         bug_id=bug_id, display_number=display_number,
         script_name=script_name, youtube_link=youtube_link,
         files=files,
         username=username, points=points,
-        dup_info=dup_info,
     )
 
 
@@ -331,26 +312,11 @@ async def submit_bug_as_is(bug_id: int) -> bool:
 # ─────────────────────────────────────────────
 
 def _build_bug_text(dn: int, username: str, script_name: str,
-                    youtube_link: str, files: list[dict], points: int,
-                    dup_info: dict | None = None) -> str:
+                    youtube_link: str, files: list[dict], points: int) -> str:
     """Формирует текст уведомления о баге."""
     video_text = html.escape(youtube_link) if youtube_link else "нет"
     file_count = len(files)
     file_label = f"есть ({file_count} шт.)" if file_count > 1 else ("есть" if file_count == 1 else "нет")
-
-    if dup_info:
-        similar_text = f"#{dup_info['similar_bug_id']}" if dup_info.get("similar_bug_id") else "?"
-        return (
-            f"⚠️ <b>ВОЗМОЖНЫЙ ДУБЛЬ</b>\n\n"
-            f"🐛 <b>Баг #{dn}</b>\n"
-            f"От: @{html.escape(username)}\n\n"
-            f"📄 <b>Описание:</b> {html.escape(script_name or '—')}\n\n"
-            f"🎥 <b>Видео:</b> {video_text}\n\n"
-            f"📎 <b>Файл:</b> {file_label}\n\n"
-            f"🔄 <b>Похож на:</b> баг <b>{similar_text}</b>\n"
-            f"💬 <i>{html.escape(dup_info.get('explanation', ''))}</i>\n\n"
-            f"💰 Баллов при подтверждении: <b>{points}</b>"
-        )
 
     return (
         f"🐛 <b>Баг #{dn}</b>\n"
@@ -362,24 +328,8 @@ def _build_bug_text(dn: int, username: str, script_name: str,
     )
 
 
-def _build_keyboard(bug_id: int, dup_info: dict | None = None) -> InlineKeyboardMarkup:
+def _build_keyboard(bug_id: int) -> InlineKeyboardMarkup:
     """Формирует клавиатуру для уведомления руководителя."""
-    if dup_info:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(
-                text="🔄 Да, это дубль",
-                callback_data=f"dup_confirm:{bug_id}",
-            )],
-            [InlineKeyboardButton(
-                text="✅ Не дубль — принять",
-                callback_data=f"dup_notdup:{bug_id}",
-            )],
-            [InlineKeyboardButton(
-                text="❌ Отклонить",
-                callback_data=f"bug_reject:{bug_id}",
-            )],
-        ])
-
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"bug_confirm:{bug_id}"),
@@ -391,8 +341,7 @@ def _build_keyboard(bug_id: int, dup_info: dict | None = None) -> InlineKeyboard
 async def _notify_owner(bug_id: int, script_name: str,
                         youtube_link: str, files: list[dict],
                         username: str, points: int,
-                        display_number: int | None = None,
-                        dup_info: dict | None = None) -> bool:
+                        display_number: int | None = None) -> bool:
     """Отправляет руководителю DM с деталями бага и кнопками. Возвращает True при успехе."""
     from utils.logger import get_bot
 
@@ -402,8 +351,8 @@ async def _notify_owner(bug_id: int, script_name: str,
         return False
 
     text = _build_bug_text(dn, username, script_name, youtube_link,
-                           files, points, dup_info)
-    keyboard = _build_keyboard(bug_id, dup_info)
+                           files, points)
+    keyboard = _build_keyboard(bug_id)
 
     try:
         if len(files) == 1:
