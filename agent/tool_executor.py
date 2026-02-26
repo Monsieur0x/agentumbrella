@@ -49,7 +49,8 @@ async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: 
 
 
 _ADMIN_TOOLS = {"award_points", "award_points_bulk", "issue_warning", "issue_warning_bulk", "remove_warning", "create_task", "mark_bug_duplicate", "search_bugs", "delete_bug", "publish_rating", "refresh_testers", "link_login", "get_logins_list"}
-_OWNER_TOOLS = {"manage_admin", "switch_mode"}
+_TRACKER_TOOLS = {"award_points", "award_points_bulk"}
+_OWNER_TOOLS = {"manage_admin", "manage_tracker", "switch_mode"}
 
 
 async def _check_permission(name: str, caller_id: int) -> str | None:
@@ -57,12 +58,18 @@ async def _check_permission(name: str, caller_id: int) -> str | None:
     if name not in _ADMIN_TOOLS and name not in _OWNER_TOOLS:
         return None
     from models.admin import is_admin, is_owner
+    from models.tracker import is_tracker
     if name in _OWNER_TOOLS:
         if not await is_owner(caller_id or 0):
             return "Только для руководителя"
     if name in _ADMIN_TOOLS:
-        if not (await is_admin(caller_id or 0) or await is_owner(caller_id or 0)):
-            return "Недостаточно прав"
+        cid = caller_id or 0
+        if await is_admin(cid) or await is_owner(cid):
+            return None
+        # Трекер может использовать только award_points / award_points_bulk
+        if name in _TRACKER_TOOLS and await is_tracker(cid):
+            return None
+        return "Недостаточно прав"
     return None
 
 
@@ -187,6 +194,9 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
     # === АДМИНЫ ===
     elif name == "manage_admin":
         return await _manage_admin(args["action"], args.get("username"))
+
+    elif name == "manage_tracker":
+        return await _manage_tracker(args["action"], args.get("username"))
 
     # === БАГИ ===
     elif name == "mark_bug_duplicate":
@@ -693,6 +703,46 @@ async def _manage_admin(action: str, username: str = None) -> dict:
         ok = await remove_admin(tester["telegram_id"])
         if not ok:
             return {"error": "Не удалось удалить (возможно, это руководитель)"}
+        clear_history(tester["telegram_id"])
+        return {"success": True, "action": "removed", "username": _tag(tester["username"])}
+
+    return {"error": f"Неизвестное действие: {action}"}
+
+
+async def _manage_tracker(action: str, username: str = None) -> dict:
+    """Управление трекерами: add / remove / list."""
+    from models.tracker import add_tracker, remove_tracker, get_all_trackers
+    from agent.brain import clear_history
+
+    if action == "list":
+        trackers = await get_all_trackers()
+        return {
+            "trackers": [
+                {"username": _tag(t["username"]), "added_at": t["added_at"]}
+                for t in trackers
+            ]
+        }
+
+    if not username:
+        return {"error": "Не указан юзернейм"}
+
+    clean_username = _normalize_username(username)
+    tester = await get_tester_by_username(clean_username)
+
+    if action == "add":
+        if not tester:
+            return {"error": f"@{clean_username} не найден в базе. Человек должен сначала написать в группу."}
+        ok = await add_tracker(tester["telegram_id"], tester["username"], tester["full_name"])
+        if ok:
+            clear_history(tester["telegram_id"])
+        return {"success": ok, "action": "added", "username": _tag(tester["username"])}
+
+    elif action == "remove":
+        if not tester:
+            return {"error": f"@{clean_username} не найден"}
+        ok = await remove_tracker(tester["telegram_id"])
+        if not ok:
+            return {"error": f"@{clean_username} не является трекером"}
         clear_history(tester["telegram_id"])
         return {"success": True, "action": "removed", "username": _tag(tester["username"])}
 

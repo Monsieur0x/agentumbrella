@@ -16,6 +16,8 @@ def get_system_prompt(context: dict) -> str:
         role_block = "Роль: руководитель. Все функции доступны."
     elif role == "admin":
         role_block = "Роль: админ. Всё кроме управления админами."
+    elif role == "tracker":
+        role_block = "Роль: трекер. Можешь выдавать/снимать баллы (award_points, award_points_bulk). Остальные админские функции недоступны."
     else:
         role_block = "Роль: тестер. Только свои баллы/рейтинг. НЕ вызывай админские функции."
 

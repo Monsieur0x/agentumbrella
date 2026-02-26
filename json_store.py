@@ -82,6 +82,7 @@ SETTINGS_FILE = "settings.json"
 LOGIN_MAPPING_FILE = "login_mapping.json"
 PROCESSED_MATCHES_FILE = "processed_matches.json"
 TASKS_FILE = "tasks.json"
+TRACKERS_FILE = "trackers.json"
 
 # Начальные данные для каждого файла
 _DEFAULTS = {
@@ -94,6 +95,7 @@ _DEFAULTS = {
     LOGIN_MAPPING_FILE: {},
     PROCESSED_MATCHES_FILE: {},
     TASKS_FILE: {"next_id": 1, "items": {}},
+    TRACKERS_FILE: {},
 }
 
 

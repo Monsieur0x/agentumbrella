@@ -199,6 +199,20 @@ ALL_TOOLS = [
         }
     },
 
+    # --- УПРАВЛЕНИЕ ТРЕКЕРАМИ ---
+    {
+        "name": "manage_tracker",
+        "description": "Управление трекерами (тестер с правом выдавать баллы). Владелец.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["add", "remove", "list"]},
+                "username": {"type": "string"}
+            },
+            "required": ["action"]
+        }
+    },
+
     # --- ОБНОВЛЕНИЕ СПИСКА ТЕСТЕРОВ ---
     {
         "name": "refresh_testers",
@@ -382,6 +396,10 @@ TOOL_KEYWORDS: dict[str, list[str]] = {
         r"админ",
         r"(добав|удал|убер|назнач|сним)\w*\s+админ",
     ],
+    "manage_tracker": [
+        r"трекер",
+        r"(добав|удал|убер|назнач|сним)\w*\s+трекер",
+    ],
     "mark_bug_duplicate": [
         r"дубл", r"дубликат",
         r"(помет|отмет|поставь)\w*\s+дубл",
@@ -434,7 +452,8 @@ _TOOL_PATTERNS: dict[str, list[re.Pattern]] = {
 # Роли → запрещённые tools
 _ROLE_EXCLUDE: dict[str, set[str]] = {
     "owner":  set(),
-    "admin":  {"manage_admin"},
+    "admin":  {"manage_admin", "manage_tracker"},
+    "tracker": set(TOOL_KEYWORDS.keys()) - {"get_tester_stats", "get_rating", "award_points", "award_points_bulk"},
     "tester": set(TOOL_KEYWORDS.keys()) - {"get_tester_stats", "get_rating"},
 }
 
@@ -444,7 +463,12 @@ def get_tools_for_role(role: str) -> list:
     if role == "owner":
         return ALL_TOOLS
     if role == "admin":
-        return [t for t in ALL_TOOLS if t["name"] != "manage_admin"]
+        return [t for t in ALL_TOOLS if t["name"] not in ("manage_admin", "manage_tracker")]
+    if role == "tracker":
+        tracker_tools = {"get_tester_stats", "get_rating", "award_points", "award_points_bulk",
+                         "get_team_stats", "get_inactive_testers", "compare_testers",
+                         "get_bug_stats", "get_testers_list"}
+        return [t for t in ALL_TOOLS if t["name"] in tracker_tools]
     tester_tools = ["get_tester_stats", "get_rating"]
     return [t for t in ALL_TOOLS if t["name"] in tester_tools]
 

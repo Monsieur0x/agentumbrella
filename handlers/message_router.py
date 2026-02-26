@@ -10,6 +10,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from config import GROUP_ID, TOPIC_IDS, TOPIC_NAMES, DEBUG_TOPICS, OBSERVE_REPLY
 from models.admin import is_admin, is_owner
+from models.tracker import is_tracker
 from models.tester import get_or_create_tester, get_tester_by_id
 from agent.brain import process_message, process_chat_message
 from services.rating_service import get_rating, format_rating_message
@@ -69,11 +70,13 @@ def get_topic_name(message: Message) -> str:
 
 
 async def get_role(telegram_id: int) -> str:
-    """Определяет роль пользователя: owner / admin / tester."""
+    """Определяет роль пользователя: owner / admin / tracker / tester."""
     if await is_owner(telegram_id):
         return "owner"
     if await is_admin(telegram_id):
         return "admin"
+    if await is_tracker(telegram_id):
+        return "tracker"
     return "tester"
 
 
@@ -568,7 +571,7 @@ async def handle_private_message(message: Message, bot: Bot):
     role = await get_role(user.id)
 
     # === Отправка сообщения в General от лица бота ===
-    if role in ("owner", "admin") and message.text.startswith("!"):
+    if role in ("owner", "admin", "tracker") and message.text.startswith("!"):
         text_to_send = message.text[1:].strip()
         if text_to_send:
             await bot.send_message(

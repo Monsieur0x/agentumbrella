@@ -43,7 +43,8 @@ end
 local allowed_gamemodes = {
     [Enum.GameMode.DOTA_GAMEMODE_AP] = true,
     [Enum.GameMode.DOTA_GAMEMODE_TURBO] = true,
-    [Enum.GameMode.DOTA_GAMEMODE_SD] = true
+    [Enum.GameMode.DOTA_GAMEMODE_SD] = true,
+    [Enum.GameMode.DOTA_GAMEMODE_ALL_DRAFT] = true,
 }
 
 local gameended = false
