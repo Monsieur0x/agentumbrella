@@ -6,7 +6,7 @@ import json
 from aiohttp import web
 from datetime import datetime
 
-from models.login_mapping import get_telegram_id_by_login, is_match_processed, mark_match_processed
+from models.login_mapping import get_telegram_id_by_login, try_claim_match
 from models.tester import get_tester_by_id, update_tester_stats, update_tester_points
 from models.settings import get_points_config
 from json_store import async_update, POINTS_LOG_FILE
@@ -39,9 +39,9 @@ async def _handle_game(request: web.Request) -> web.Response:
         print(f"[GAME] missing fields")
         return web.json_response({"status": "missing_fields"}, status=400)
 
-    # Дедупликация: один матч = одно начисление
-    if await is_match_processed(match_id):
-        print(f"[GAME] match={match_id} already processed")
+    # Дедупликация: один матч + один логин = одно начисление
+    if not await try_claim_match(match_id, login):
+        print(f"[GAME] match={match_id} login={login} already processed")
         return web.json_response({"status": "already_processed"})
 
     # Найти тестера по логину
@@ -82,9 +82,6 @@ async def _handle_game(request: web.Request) -> web.Response:
         return pdata
 
     await async_update(POINTS_LOG_FILE, add_log)
-
-    # Пометить матч обработанным
-    await mark_match_processed(match_id)
 
     # Лог
     username_display = f"@{tester['username']}" if tester.get("username") else tester.get("full_name", "?")

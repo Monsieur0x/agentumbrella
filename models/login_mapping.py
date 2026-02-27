@@ -46,16 +46,20 @@ async def get_all_logins() -> list[dict]:
     return result
 
 
-async def is_match_processed(match_id: int) -> bool:
-    """Проверить, был ли матч уже обработан."""
-    data = await async_load(PROCESSED_MATCHES_FILE)
-    return str(match_id) in data
+async def try_claim_match(match_id: int, login: str) -> bool:
+    """Атомарно проверяет и помечает матч для конкретного логина.
+    Возвращает True если матч успешно занят, False если уже обработан."""
+    key = f"{match_id}:{login}"
+    claimed = False
 
-
-async def mark_match_processed(match_id: int):
-    """Пометить матч как обработанный."""
     def updater(data):
-        data[str(match_id)] = datetime.now().isoformat()
+        nonlocal claimed
+        if key in data:
+            claimed = False
+        else:
+            data[key] = datetime.now().isoformat()
+            claimed = True
         return data
 
     await async_update(PROCESSED_MATCHES_FILE, updater)
+    return claimed
