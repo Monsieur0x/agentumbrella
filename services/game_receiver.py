@@ -84,7 +84,7 @@ async def _handle_game(request: web.Request) -> web.Response:
     await async_update(POINTS_LOG_FILE, add_log)
 
     # Лог
-    username_display = f"@{tester['username']}" if tester.get("username") else tester.get("full_name", "?")
+    username_display = tester.get("username") or tester.get("full_name", "?")
     gamemode = data.get("gamemode_string", "?")
     print(f"[GAME] match={match_id} {username_display} +{points} б. ({gamemode})")
     await log_info(f"Игра #{match_id} ({gamemode}): {username_display} +{points} б.")

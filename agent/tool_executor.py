@@ -22,11 +22,10 @@ def _normalize_username(username: str) -> str:
 
 
 def _tag(username: str) -> str:
-    """Форматирует username с @ для кликабельности в Telegram."""
+    """Форматирует username текстом (без @, чтобы не тегать в Telegram)."""
     if not username:
         return "?"
-    clean = username.lstrip("@")
-    return f"@{clean}"
+    return username.lstrip("@")
 
 
 async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: str = "") -> str:
@@ -107,7 +106,7 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
         )
         if result.get("success"):
             await log_admin(
-                f"@{result['username']}: {'+' if args['amount'] > 0 else ''}{args['amount']} б. ({args['reason']})"
+                f"{result['username']}: {'+' if args['amount'] > 0 else ''}{args['amount']} б. ({args['reason']})"
             )
         return result
 
@@ -505,7 +504,7 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
     for uname in names:
         tester = await get_tester_by_username(uname)
         if not tester:
-            results.append({"username": f"@{uname}", "error": "не найден"})
+            results.append({"username": uname, "error": "не найден"})
             continue
 
         old_count = tester["warnings_count"]

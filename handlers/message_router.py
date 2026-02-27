@@ -502,7 +502,7 @@ async def _handle_tester_commands(message: Message, user) -> bool:
         if not tester:
             await message.answer("Ты ещё не зарегистрирован. Напиши что-нибудь в группе.")
             return True
-        uname = f"@{tester['username']}" if tester["username"] else tester["full_name"] or str(user.id)
+        uname = tester["username"] if tester["username"] else tester["full_name"] or str(user.id)
         await message.answer(
             f"📊 <b>Твоя статистика</b>\n\n"
             f"👤 {uname}\n"

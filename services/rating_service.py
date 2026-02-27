@@ -27,7 +27,7 @@ async def get_rating(top_count: int = 0) -> dict:
     rating_list = []
     for i, t in enumerate(active_testers, 1):
         raw = t["username"] or t["full_name"] or f"id:{t['telegram_id']}"
-        tag = f"@{raw}" if t["username"] and not raw.startswith("id:") else raw
+        tag = raw.lstrip("@") if t["username"] and not raw.startswith("id:") else raw
         rating_list.append({
             "position": i,
             "username": tag,
