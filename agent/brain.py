@@ -3,67 +3,66 @@
 """
 import json
 import re
-import time
-import asyncio
 from collections import OrderedDict
 import anthropic
-from config import ANTHROPIC_API_KEY, MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
+from config import MODEL, MAX_TOKENS, MAX_TOOL_ROUNDS, MAX_HISTORY, MAX_USERS_CACHE
 from agent.system_prompt import get_system_prompt, get_chat_prompt
-from agent.tools import match_tools, get_tools_for_role
+from agent.tools import get_tools_for_role
 from agent.tool_executor import execute_tool
+from agent.client import call_claude
 
-client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-
-# === Защита от перерасхода лимита ===
-MIN_INTERVAL = 1.0
-_last_request_time = 0.0
-_throttle_lock = asyncio.Lock()
-
-# === История диалогов per-user с LRU-лимитом ===
-
+# === История диалогов ===
+# Ключ: chat_id (для групп — общая история, для ЛС — telegram_id пользователя)
 _conversation_history: OrderedDict[int, list] = OrderedDict()
 
 
-def _get_history(caller_id: int) -> list:
-    """Получает историю для пользователя, обновляя LRU-порядок."""
-    if caller_id in _conversation_history:
-        _conversation_history.move_to_end(caller_id)
-        return _conversation_history[caller_id]
+def _get_history(history_key: int) -> list:
+    """Получает историю по ключу (chat_id или caller_id), обновляя LRU-порядок."""
+    if history_key in _conversation_history:
+        _conversation_history.move_to_end(history_key)
+        return _conversation_history[history_key]
     if len(_conversation_history) >= MAX_USERS_CACHE:
         _conversation_history.popitem(last=False)
-    _conversation_history[caller_id] = []
-    return _conversation_history[caller_id]
+    _conversation_history[history_key] = []
+    return _conversation_history[history_key]
 
 
 def clear_history(caller_id: int):
-    """Сбрасывает историю диалога для пользователя (при смене роли)."""
+    """Сбрасывает историю диалога для пользователя (при смене роли).
+    В ЛС очищает per-user историю. В группе не влияет на общую историю."""
     _conversation_history.pop(caller_id, None)
+
+
+def _trim_history(history: list, max_messages: int):
+    """Обрезает историю до max_messages сообщений."""
+    while len(history) > max_messages:
+        history.pop(0)
 
 
 # Мгновенные ответы БЕЗ вызова Claude API — экономим токены
 INSTANT_REPLIES = {
     # Приветствия
-    "привет": "Привет! 👋 Чем могу помочь?",
-    "здравствуй": "Здравствуйте! Чем могу помочь?",
-    "здравствуйте": "Здравствуйте! Чем могу помочь?",
-    "хай": "Хай! 👋 Что нужно?",
-    "hello": "Hello! How can I help?",
-    "hi": "Hi! 👋",
+    "привет": "👋",
+    "здравствуй": "👋",
+    "здравствуйте": "👋",
+    "хай": "👋",
+    "hello": "👋",
+    "hi": "👋",
     # Прощания
-    "пока": "Пока! 👋",
-    "до свидания": "До свидания! 👋",
-    # Благодарности и подтверждения — не требуют Claude
-    "спасибо": "Пожалуйста! 😊",
-    "благодарю": "Всегда пожалуйста! 😊",
+    "пока": "👋",
+    "до свидания": "👋",
+    # Благодарности и подтверждения
+    "спасибо": "👍",
+    "благодарю": "👍",
     "ок": "👍",
     "окей": "👍",
-    "круто": "😊",
-    "отлично": "😊",
+    "круто": "🔥",
+    "отлично": "🔥",
     "супер": "🔥",
-    "класс": "😊",
-    "как дела": "Всё ок, работаю. Чем помочь?",
-    "что нового": "Без изменений, работаю. Чем помочь?",
-    "кто ты": "Я Umbrella Bot — координирую тестирование чита для Dota 2 🤖",
+    "класс": "🔥",
+    "как дела": "Всё ок, работаю.",
+    "что нового": "Без изменений, работаю.",
+    "кто ты": "Umbrella Bot — координирую тестирование чита для Dota 2 🤖",
     # Помощь
     "помощь": (
         "📋 <b>Команды:</b>\n\n"
@@ -131,6 +130,7 @@ async def try_direct_command(text: str, caller_id: int) -> str | None:
 
     # --- Рейтинг ---
     if _RE_RATING.match(clean):
+        print(f"[DIRECT] Совпадение: рейтинг")
         from services.rating_service import get_rating, format_rating_message
         data = await get_rating()
         return format_rating_message(data)
@@ -138,6 +138,7 @@ async def try_direct_command(text: str, caller_id: int) -> str | None:
     # --- Статистика конкретного тестера ---
     m = _RE_STATS.match(clean)
     if m:
+        print(f"[DIRECT] Совпадение: статистика @{m.group(1)}")
         result_json = await execute_tool("get_tester_stats", json.dumps({"username": m.group(1)}), caller_id)
         result = json.loads(result_json)
         if result.get("error"):
@@ -153,18 +154,6 @@ async def try_direct_command(text: str, caller_id: int) -> str | None:
         )
 
     return None
-
-
-def _max_history(role: str) -> int:
-    return MAX_HISTORY.get(role, 3)
-
-
-def _trim_history(history: list, role: str = "tester"):
-    limit = _max_history(role) * 2
-    while len(history) > limit:
-        history.pop(0)
-
-
 
 
 def _serialize_content(content) -> list[dict]:
@@ -183,37 +172,12 @@ def _serialize_content(content) -> list[dict]:
     return result
 
 
-
-async def _throttle():
-    """Ждём если запросы слишком частые."""
-    global _last_request_time
-    async with _throttle_lock:
-        now = time.time()
-        elapsed = now - _last_request_time
-        if elapsed < MIN_INTERVAL:
-            await asyncio.sleep(MIN_INTERVAL - elapsed)
-        _last_request_time = time.time()
-
-
-async def _call_claude(**kwargs):
-    """Обёртка с throttle и retry при перегрузке."""
-    max_retries = 3
-    for attempt in range(max_retries):
-        await _throttle()
-        try:
-            return await client.messages.create(**kwargs)
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529 and attempt < max_retries - 1:
-                wait = 2 ** attempt * 2  # 2s, 4s, 8s
-                print(f"[CLAUDE] API перегружен (529), повтор через {wait}с...")
-                await asyncio.sleep(wait)
-            else:
-                raise
-
-
 async def process_message(text: str, username: str, role: str, topic: str,
-                          caller_id: int = None) -> str:
-    """Главная функция мозга агента."""
+                          caller_id: int = None, chat_id: int = None) -> str:
+    """Главная функция мозга агента.
+    chat_id — ID чата. Для групп: общая история на весь чат.
+    Для ЛС: None, используется caller_id как ключ."""
+    from config import MAX_GROUP_HISTORY
 
     # 1. Мгновенный ответ без API
     instant = get_instant_reply(text)
@@ -232,19 +196,25 @@ async def process_message(text: str, username: str, role: str, topic: str,
 
     model = MODEL
 
-    # 4. Получаем историю и добавляем новое сообщение
-    history = _get_history(caller_id)
-    history.append({"role": "user", "content": text})
-    _trim_history(history, role)
+    # 4. Получаем историю: для групп — общая по chat_id, для ЛС — по caller_id
+    history_key = chat_id if chat_id else caller_id
+    history = _get_history(history_key)
+
+    # В групповом чате добавляем username к сообщению для контекста
+    if chat_id:
+        user_text = f"@{username}: {text}"
+        max_msgs = MAX_GROUP_HISTORY
+    else:
+        user_text = text
+        max_msgs = MAX_HISTORY.get(role, 3) * 2
+
+    history.append({"role": "user", "content": user_text})
+    _trim_history(history, max_msgs)
 
     messages = [msg.copy() for msg in history]
 
-    # 5. Инструменты — фильтруем по ключевым словам (экономия токенов)
-    #    Если regex ничего не поймал — отдаём все tools по роли,
-    #    чтобы Claude сам определил нужную функцию по контексту.
-    tools = match_tools(text, role)
-    if not tools:
-        tools = get_tools_for_role(role)
+    # 5. Инструменты по роли
+    tools = get_tools_for_role(role)
 
     try:
         kwargs = {
@@ -258,7 +228,7 @@ async def process_message(text: str, username: str, role: str, topic: str,
             kwargs["tool_choice"] = {"type": "auto"}
 
         print(f"[CLAUDE] Запрос: role={role}, tools={len(tools) if tools else 0}, model={model}")
-        response = await _call_claude(**kwargs)
+        response = await call_claude(**kwargs)
         usage = response.usage
         has_tools = any(b.type == "tool_use" for b in response.content)
         print(f"[CLAUDE] Ответ: {'tool_use' if has_tools else 'text'} (in={usage.input_tokens}, out={usage.output_tokens})")
@@ -270,6 +240,7 @@ async def process_message(text: str, username: str, role: str, topic: str,
         # Инструменты, которые сами отправляют ответ пользователю (черновик и т.д.)
         _SILENT_TOOLS = {"create_task"}
         called_silent_tool = False
+        silent_tool_error = None
 
         while tool_use_blocks and round_num < max_tool_rounds:
             round_num += 1
@@ -289,6 +260,15 @@ async def process_message(text: str, username: str, role: str, topic: str,
                 result = await execute_tool(func_name, func_args, caller_id, topic)
                 print(f"[TOOL] {func_name} → {result[:150]}")
 
+                # Проверяем ошибку в silent tool
+                if func_name in _SILENT_TOOLS:
+                    try:
+                        result_data = json.loads(result)
+                        if isinstance(result_data, dict) and result_data.get("error"):
+                            silent_tool_error = result_data["error"]
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -306,26 +286,32 @@ async def process_message(text: str, username: str, role: str, topic: str,
             if tools:
                 cont_kwargs["tools"] = tools
                 cont_kwargs["tool_choice"] = {"type": "auto"}
-            response = await _call_claude(**cont_kwargs)
+            response = await call_claude(**cont_kwargs)
             usage = response.usage
             has_tools = any(b.type == "tool_use" for b in response.content)
             print(f"[CLAUDE] Продолжение (раунд {round_num}): {'tool_use' if has_tools else 'text'} (in={usage.input_tokens}, out={usage.output_tokens})")
             tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
 
-        # Если инструмент сам отправил ответ — не дублируем
+        # Если silent tool вернул ошибку — сообщить пользователю
+        if called_silent_tool and silent_tool_error:
+            error_reply = f"⚠️ {silent_tool_error}"
+            history.append({"role": "assistant", "content": error_reply})
+            _trim_history(history, max_msgs)
+            return error_reply
+
+        # Если silent tool отработал без ошибки — не дублируем ответ
         if called_silent_tool:
             text_blocks = [b for b in response.content if b.type == "text"]
             reply = text_blocks[0].text if text_blocks else ""
             history.append({"role": "assistant", "content": reply or "Готово"})
-            _trim_history(history, role)
+            _trim_history(history, max_msgs)
             return None
 
         text_blocks = [b for b in response.content if b.type == "text"]
         reply = text_blocks[0].text if text_blocks else "Готово ✅"
 
-        # Сохраняем в историю последний assistant + tool_result обмен (сжато)
         history.append({"role": "assistant", "content": reply})
-        _trim_history(history, role)
+        _trim_history(history, max_msgs)
 
         return reply
 
@@ -362,13 +348,13 @@ async def process_chat_message(text: str, caller_id: int) -> str:
 
     history = _get_history(caller_id)
     history.append({"role": "user", "content": text})
-    _trim_history(history, "owner")  # даём побольше истории для контекста
+    _trim_history(history, 10)  # даём побольше истории для контекста
 
     messages = [msg.copy() for msg in history]
 
     try:
         print(f"[CLAUDE] Chat запрос от user_id={caller_id}, model={CHAT_MODEL}")
-        response = await _call_claude(
+        response = await call_claude(
             model=CHAT_MODEL,
             system=system_prompt,
             messages=messages,
@@ -381,7 +367,7 @@ async def process_chat_message(text: str, caller_id: int) -> str:
         reply = text_blocks[0].text if text_blocks else "чё"
 
         history.append({"role": "assistant", "content": reply})
-        _trim_history(history, "owner")
+        _trim_history(history, 10)
 
         return reply
 

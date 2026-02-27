@@ -22,10 +22,11 @@ def _normalize_username(username: str) -> str:
 
 
 def _tag(username: str) -> str:
-    """Форматирует username текстом (без @, чтобы не тегать в Telegram)."""
+    """Форматирует username текстом (без @, чтобы не тегать в Telegram). HTML-safe."""
+    import html as _html
     if not username:
         return "?"
-    return username.lstrip("@")
+    return _html.escape(username.lstrip("@"))
 
 
 async def execute_tool(name: str, arguments: str, caller_id: int = None, topic: str = "") -> str:
@@ -101,20 +102,22 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 
     # === БАЛЛЫ ===
     elif name == "award_points":
+        reason = args.get("reason", "Без причины")
         result = await award_points(
-            args["username"], args["amount"], args["reason"], caller_id
+            args["username"], args["amount"], reason, caller_id
         )
         if result.get("success"):
             await log_admin(
-                f"{result['username']}: {'+' if args['amount'] > 0 else ''}{args['amount']} б. ({args['reason']})"
+                f"{result['username']}: {'+' if args['amount'] > 0 else ''}{args['amount']} б. ({reason})"
             )
         return result
 
     elif name == "award_points_bulk":
         usernames = args.get("usernames", "all")
-        result = await award_points_bulk(usernames, args["amount"], args["reason"], caller_id)
+        reason = args.get("reason", "Без причины")
+        result = await award_points_bulk(usernames, args["amount"], reason, caller_id)
         if result.get("success_count", 0) > 0:
-            await log_admin(f"Массовое начисление: {args['amount']} б. ({args['reason']}) — {result['success_count']} тестерам")
+            await log_admin(f"Массовое начисление: {args['amount']} б. ({reason}) — {result['success_count']} тестерам")
         return result
 
     # === ПРЕДУПРЕЖДЕНИЯ ===
@@ -407,14 +410,14 @@ async def _issue_warning(username: str, reason: str, admin_id: int) -> dict:
 
     await async_update(WARNINGS_FILE, add_warning)
 
-    await log_admin(f"Предупреждение @{tester['username']}: {reason} ({new_count}/3)")
+    await log_admin(f"Предупреждение {_tag(tester['username'])}: {reason} ({new_count}/3)")
 
     # Деактивация при 3 предупреждениях
     deactivated = False
     if new_count >= 3:
         await set_tester_active(tester["telegram_id"], False)
         deactivated = True
-        await log_admin(f"Тестер @{tester['username']} деактивирован (3/3 предупреждений)")
+        await log_admin(f"Тестер {_tag(tester['username'])} деактивирован (3/3 предупреждений)")
 
     # Уведомляем тестера в ЛС
     bot = get_bot()
@@ -538,7 +541,7 @@ async def _remove_warning(usernames: str, amount: int, admin_id: int) -> dict:
         if not tester["is_active"] and new_count < 3:
             await set_tester_active(tester["telegram_id"], True)
 
-        await log_admin(f"Снят варн @{tester['username']}: {old_count} → {new_count}")
+        await log_admin(f"Снят варн {_tag(tester['username'])}: {old_count} → {new_count}")
 
         # Уведомляем тестера в ЛС
         bot = get_bot()
@@ -577,13 +580,13 @@ async def _create_task(brief: str, admin_id: int) -> dict:
     """Создаёт черновик задания: расширяет через ИИ и отправляет на подтверждение."""
     import html as html_module
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    from agent.brain import _call_claude
+    from agent.client import call_claude
     from config import MODEL
 
     # Расширяем задание через ИИ
     full_text = brief
     try:
-        response = await _call_claude(
+        response = await call_claude(
             model=MODEL,
             messages=[{
                 "role": "user",
@@ -597,7 +600,8 @@ async def _create_task(brief: str, admin_id: int) -> dict:
                     "- Указывай конкретику: герой, аспект, шард, режим (турбо/лобби/паблик), бета или паблик билд\n"
                     "- Формат багрепорта — только если он важен (видео, debug.log, краш-лог, matchID)\n"
                     "- Два-четыре предложения — норма. Длиннее — только если реально нужно расписать условия\n"
-                    "- НЕ используй HTML-теги и markdown. Только plain text и эмодзи\n\n"
+                    "- НЕ используй HTML-теги и markdown. Только plain text и эмодзи\n"
+                    "- Не добавляй заголовок или номер задания — только текст задания\n\n"
                     "Правила:\n"
                     "- Только функционал, реальный для чита Dota 2\n"
                     "- Названия героев, скиллов, предметов — как в игре\n"

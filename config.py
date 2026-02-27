@@ -65,13 +65,16 @@ MODEL = os.getenv("MODEL", "claude-haiku-4-5-20251001")
 DEBUG_TOPICS = os.getenv("DEBUG_TOPICS", "0") == "1"
 
 # === Лимиты агента ===
-MAX_TOKENS = _int_env("MAX_TOKENS", 1024)
-MAX_TOOL_ROUNDS = _int_env("MAX_TOOL_ROUNDS", 3)
+MAX_TOKENS = _int_env("MAX_TOKENS", 2048)
+MAX_TOOL_ROUNDS = _int_env("MAX_TOOL_ROUNDS", 5)
 MAX_HISTORY = {
     "tester": 2,
-    "admin": 2,
-    "owner": 3,
+    "tracker": 3,
+    "admin": 4,
+    "owner": 5,
 }
+# Лимит общей истории группового чата (в сообщениях, не парах)
+MAX_GROUP_HISTORY = _int_env("MAX_GROUP_HISTORY", 20)
 MAX_USERS_CACHE = 200
 DUPLICATE_CHECK_LIMIT = 50
 SEARCH_BUGS_LIMIT = 20

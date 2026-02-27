@@ -41,7 +41,12 @@ async def _get_bot_info(bot: Bot):
 async def _safe_reply(message: Message, text: str, **kwargs):
     """Отправляет ответ, разбивая на части если длина превышает лимит Telegram."""
     if len(text) <= TG_MAX_MESSAGE_LENGTH:
-        await message.reply(text, **kwargs)
+        try:
+            await message.reply(text, **kwargs)
+        except Exception:
+            # Fallback: отправить без parse_mode (невалидный HTML и т.д.)
+            clean_kwargs = {k: v for k, v in kwargs.items() if k != 'parse_mode'}
+            await message.reply(text, **clean_kwargs)
         return
 
     # Разбиваем на части по TG_MAX_MESSAGE_LENGTH символов
@@ -58,7 +63,35 @@ async def _safe_reply(message: Message, text: str, **kwargs):
         text = text[cut:].lstrip("\n")
 
     for part in parts:
-        await message.reply(part, **kwargs)
+        try:
+            await message.reply(part, **kwargs)
+        except Exception:
+            clean_kwargs = {k: v for k, v in kwargs.items() if k != 'parse_mode'}
+            await message.reply(part, **clean_kwargs)
+
+
+# Короткие реакции, для которых реплай-контекст не вставляется
+_REACTION_WORDS = {"ок", "окей", "ладно", "понял", "понятно", "хорошо", "ясно",
+                   "да", "нет", "ага", "угу", "лол", "кек", "gg", "wp",
+                   "👍", "👎", "😂", "🔥", "💪", "❤️", "👀",
+                   "согласен", "точно", "верно", "красавчик", "молодец",
+                   "спасибо", "спс", "thanks", "thx"}
+
+# Слова-маркеры команд — если есть в коротком тексте, это не реакция
+_COMMAND_MARKERS = ("покажи", "начисли", "удали", "варн", "сними", "создай",
+                    "рейтинг", "стат", "предупреди", "опубликуй", "запости")
+
+
+def _is_reaction(text: str) -> bool:
+    """Проверяет, является ли текст короткой реакцией (не командой)."""
+    clean = text.strip().lower().rstrip("!?.,)")
+    if clean in _REACTION_WORDS:
+        return True
+    # Одно-два слова без @mention и без цифр — скорее всего реакция
+    if len(clean.split()) <= 2 and "@" not in clean and not any(c.isdigit() for c in clean):
+        if not any(kw in clean for kw in _COMMAND_MARKERS):
+            return True
+    return False
 
 
 def get_topic_name(message: Message) -> str:
@@ -288,8 +321,9 @@ async def handle_group_message(message: Message, bot: Bot):
     text_to_send = message.text
     reply_user = message.reply_to_message.from_user if message.reply_to_message else None
     if reply_user and not reply_user.is_bot and reply_user.id != user.id:
-        reply_username = reply_user.username or reply_user.full_name or str(reply_user.id)
-        text_to_send = f"[ответ на сообщение @{reply_username}] {message.text}"
+        if not _is_reaction(message.text):
+            reply_username = reply_user.username or reply_user.full_name or str(reply_user.id)
+            text_to_send = f"[ответ на сообщение @{reply_username}] {message.text}"
 
     # Показываем «печатает...»
     try:
@@ -306,6 +340,7 @@ async def handle_group_message(message: Message, bot: Bot):
             role=role,
             topic=topic,
             caller_id=user.id,
+            chat_id=message.chat.id,
         )
         if response:
             await _safe_reply(message, response, parse_mode="HTML")

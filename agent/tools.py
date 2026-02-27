@@ -2,7 +2,6 @@
 Описание всех функций (tools) для Anthropic Claude function calling.
 ИИ видит эти описания и решает какую функцию вызвать.
 """
-import re
 
 
 # === ВСЕ ИНСТРУМЕНТЫ ===
@@ -40,9 +39,9 @@ ALL_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "days": {"type": "integer", "description": "Дней без активности"}
+                "days": {"type": "integer", "description": "Дней без активности (по умолчанию 7)"}
             },
-            "required": ["days"]
+            "required": []
         }
     },
     {
@@ -71,7 +70,7 @@ ALL_TOOLS = [
     },
     {
         "name": "get_testers_list",
-        "description": "Список тестеров: имена, баллы, варны, статус.",
+        "description": "Список тестеров: имена, баллы, варны, статус. Для просмотра варнов и состава команды.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -84,28 +83,28 @@ ALL_TOOLS = [
     # --- БАЛЛЫ ---
     {
         "name": "award_points",
-        "description": "Начислить/списать баллы тестеру (+/-). Админ.",
+        "description": "Начислить/списать баллы одному тестеру (+/-). Админ.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "username": {"type": "string"},
-                "amount": {"type": "integer", "description": "+/-"},
-                "reason": {"type": "string"}
+                "amount": {"type": "integer", "description": "Количество (+/-)"},
+                "reason": {"type": "string", "description": "Причина (по умолчанию 'Без причины')"}
             },
-            "required": ["username", "amount", "reason"]
+            "required": ["username", "amount"]
         }
     },
     {
         "name": "award_points_bulk",
-        "description": "Баллы нескольким тестерам или всем. Админ.",
+        "description": "Баллы нескольким тестерам или всем сразу. Админ.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "usernames": {"type": "string", "description": "Через запятую или 'all'"},
-                "amount": {"type": "integer"},
-                "reason": {"type": "string"}
+                "usernames": {"type": "string", "description": "Юзернеймы через запятую (petrov,ivanov) или 'all' для всех"},
+                "amount": {"type": "integer", "description": "Количество (+/-)"},
+                "reason": {"type": "string", "description": "Причина (по умолчанию 'Без причины')"}
             },
-            "required": ["usernames", "amount", "reason"]
+            "required": ["usernames", "amount"]
         }
     },
 
@@ -117,7 +116,7 @@ ALL_TOOLS = [
             "type": "object",
             "properties": {
                 "username": {"type": "string"},
-                "reason": {"type": "string"}
+                "reason": {"type": "string", "description": "Причина (по умолчанию 'Без причины')"}
             },
             "required": ["username"]
         }
@@ -128,20 +127,20 @@ ALL_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "usernames": {"type": "string", "description": "Через запятую или 'all'"},
-                "reason": {"type": "string"}
+                "usernames": {"type": "string", "description": "Юзернеймы через запятую или 'all'"},
+                "reason": {"type": "string", "description": "Причина (по умолчанию 'Без причины')"}
             },
             "required": ["usernames"]
         }
     },
     {
         "name": "remove_warning",
-        "description": "Снять варн(ы). Админ.",
+        "description": "Снять варн(ы) тестеру/тестерам. Админ.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "usernames": {"type": "string", "description": "Через запятую или 'all'"},
-                "amount": {"type": "integer", "description": "0=сбросить все, по умолчанию 1"}
+                "usernames": {"type": "string", "description": "Юзернеймы через запятую или 'all'"},
+                "amount": {"type": "integer", "description": "Сколько варнов снять (по умолчанию 1). 0 = сбросить все варны", "default": 1}
             },
             "required": ["usernames"]
         }
@@ -163,23 +162,23 @@ ALL_TOOLS = [
     # --- РЕЙТИНГ ---
     {
         "name": "get_rating",
-        "description": "Рейтинг тестеров (без публикации).",
+        "description": "Показать рейтинг тестеров (без публикации). Для просмотра топа по баллам.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "top_count": {"type": "integer", "description": "0=все"}
+                "top_count": {"type": "integer", "description": "Сколько показать. 0 или не указано = все тестеры"}
             },
             "required": []
         }
     },
     {
         "name": "publish_rating",
-        "description": "Опубликовать рейтинг в топик «Топ». Только по явной просьбе. Админ.",
+        "description": "Опубликовать рейтинг в топик «Топ». Вызывай ТОЛЬКО если пользователь явно попросил опубликовать/запостить. Для просмотра используй get_rating. Админ.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "top_count": {"type": "integer", "description": "0=все"},
-                "comment": {"type": "string", "description": "Комментарий: кто тащит, кто молчит"}
+                "top_count": {"type": "integer", "description": "0 = все"},
+                "comment": {"type": "string", "description": "Комментарий к рейтингу"}
             },
             "required": []
         }
@@ -188,7 +187,7 @@ ALL_TOOLS = [
     # --- УПРАВЛЕНИЕ АДМИНАМИ ---
     {
         "name": "manage_admin",
-        "description": "Управление админами. Владелец.",
+        "description": "Управление админами. Только руководитель.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -202,7 +201,7 @@ ALL_TOOLS = [
     # --- УПРАВЛЕНИЕ ТРЕКЕРАМИ ---
     {
         "name": "manage_tracker",
-        "description": "Управление трекерами (тестер с правом выдавать баллы). Владелец.",
+        "description": "Управление трекерами (тестер с правом выдавать баллы). Только руководитель.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -238,13 +237,13 @@ ALL_TOOLS = [
     },
     {
         "name": "search_bugs",
-        "description": "Поиск багов по ID/тексту/тестеру/статусу.",
+        "description": "Поиск багов. Укажи хотя бы один фильтр: bug_id, query, tester или status.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "bug_id": {"type": "integer"},
-                "query": {"type": "string"},
-                "tester": {"type": "string"},
+                "bug_id": {"type": "integer", "description": "ID бага"},
+                "query": {"type": "string", "description": "Текстовый поиск"},
+                "tester": {"type": "string", "description": "@username тестера"},
                 "status": {"type": "string", "enum": ["pending", "accepted", "rejected", "duplicate", "all"]}
             },
             "required": []
@@ -290,7 +289,7 @@ ALL_TOOLS = [
 
     {
         "name": "switch_mode",
-        "description": "Переключить режим бота. Владелец.",
+        "description": "Переключить режим бота. Только руководитель.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -300,162 +299,6 @@ ALL_TOOLS = [
         }
     },
 ]
-
-
-TOOL_KEYWORDS: dict[str, list[str]] = {
-    "get_tester_stats": [
-        r"статист", r"стат[аы]?\b",
-        r"(покажи|глянь|чекни|скинь|дай)\s.*@\w",
-        r"(что|как|чё|че)\s+(по|у|с)\s+@?\w",
-        r"сколько\s+(у|баллов|очков|варн)",
-        r"инф[аоу]\s+(по|про|о)\s+@?\w",
-    ],
-    "get_team_stats": [
-        r"команд\w*\s+стат", r"общ\w+\s+стат", r"стат\w*\s+команд",
-        r"за\s+(сегодня|недел|месяц|всё|все\s+время)",
-        r"как\s+(дела\s+)?у\s+команд",
-        r"обзор\s+команд",
-    ],
-    "get_inactive_testers": [
-        r"неактивн", r"не\s+работал", r"молчат", r"молчун",
-        r"пропал", r"забил", r"забив", r"слил",
-        r"кто\s+(не|забил|забив|слил|пропал|молчит|afk)",
-        r"afk", r"афк",
-        r"давно\s+не\s+(писал|играл|тестил|работал)",
-        r"без\s+активност",
-    ],
-    "compare_testers": [
-        r"сравни", r"сравнен", r"vs\b", r"против\b",
-        r"кто\s+(лучше|круче|сильнее)\s+.+\s+(или|vs)",
-    ],
-    "get_bug_stats": [
-        r"стат\w*\s+(по\s+)?баг", r"баг\w*\s+стат",
-        r"сколько\s+баг",
-    ],
-    "get_testers_list": [
-        r"список\s+тестер", r"кто\s+в\s+команд",
-        r"тестер\w*\s+(список|все|всех)",
-        r"все\s+тестер", r"покажи\s+тестер",
-        r"сколько\s+тестер",
-        r"кто\s+с\s+варн",
-        r"у\s+кого\s+варн",
-    ],
-    "award_points": [
-        r"начисл", r"списа", r"балл",
-        r"(кинь|накинь|добав|плюс[ао]ни|дай|выдай)\s.*(\d|одн|дв|тр|четыр|пят|шест|сем|восем|девят|десят)",
-        r"(минус[ао]ни|штрафани|отним|сним)\s.*(\d|одн|дв|тр|четыр|пят|шест|сем|восем|девят|десят)",
-        r"\d+\s*(балл|очк|поинт|pts)",
-        r"(плюс|минус)\s*\d",
-        r"[+-]\d+\s+@?\w",
-    ],
-    "award_points_bulk": [
-        r"(начисл|кинь|накинь|добав|дай|выдай)\w*\s+.*всем",
-        r"всем\s+.*(балл|очк|\d)",
-        r"массов\w*\s+(начисл|балл)",
-    ],
-    "issue_warning": [
-        r"предупред", r"варн",
-        r"(накажи|штрафани)\s+@?\w",
-        r"(дай|выдай|влепи|впаяй|кинь)\s+варн",
-    ],
-    "issue_warning_bulk": [
-        r"варн\w*\s+.*всем", r"всем\s+.*варн",
-        r"предупред\w*\s+.*всем", r"всем\s+.*предупред",
-        r"массов\w*\s+варн",
-    ],
-    "remove_warning": [
-        r"сн[яи]\w*\s+.*варн", r"сн[яи]\w*\s+.*предупр",
-        r"убра\w*\s+.*варн", r"убра\w*\s+.*предупр",
-        r"сброс\w*\s+.*(варн|предупр)",
-        r"снять\s+.*варн", r"обнул\w*\s+.*варн",
-        r"прости\w*\s+@?\w",
-        r"амнист",
-    ],
-    "create_task": [
-        r"задани", r"задач",
-        r"(создай|дай|придумай|напиши|сделай)\s+(задан|задач|таск)",
-        r"таск\b",
-        r"(дай|придумай)\s+.*(потестить|протестить|проверить)",
-    ],
-    "get_rating": [
-        r"рейтинг", r"топ\b", r"лидер", r"таблиц",
-        r"кто\s+(лучш|топ|перв|тащит|впереди|лидир)",
-        r"(покажи|дай|скинь|глянь)\s+(рейтинг|топ|таблиц)",
-    ],
-    "publish_rating": [
-        r"(опубликуй|публик\w*|запость|отправь|скинь\s+в)\s+(рейтинг|топ|таблиц)",
-        r"обнови\s+(рейтинг|топ)",
-        r"(опубликуй|скинь|запость)\s+в\s+топик",
-    ],
-    "refresh_testers": [
-        r"обнови\s+(список|тестер)", r"синхрон", r"актуализ",
-        r"обновить\s+(список|тестер)",
-        r"пересканируй", r"перечекай\s+тестер",
-    ],
-    "manage_admin": [
-        r"админ",
-        r"(добав|удал|убер|назнач|сним)\w*\s+админ",
-    ],
-    "manage_tracker": [
-        r"трекер",
-        r"(добав|удал|убер|назнач|сним)\w*\s+трекер",
-    ],
-    "mark_bug_duplicate": [
-        r"дубл", r"дубликат",
-        r"(помет|отмет|поставь)\w*\s+дубл",
-        r"это\s+дубл",
-    ],
-    "search_bugs": [
-        r"(найди|поиск|искать|ищи|покажи|глянь|дай|чекни)\s+баг",
-        r"баг\w*\s+(по|от|#|\d)",
-        r"баг\s*#?\d+",
-        r"список\s+баг", r"все\s+баг",
-        r"баги\s+(от|тестер|по|у)",
-        r"(принят|отклон|пендинг|ожида)\w*\s+баг",
-        r"(что|инф[аоу])\s+(с|по|про)\s+баг",
-        r"где\s+баг",
-    ],
-    "delete_bug": [
-        r"удал\w*\s+баг", r"(убери|снеси|грохни|убей|вычеркни)\s+баг",
-        r"удал\w*\s+из\s+(бд|вик|weeek|базы)",
-        r"удал\w*\s+все\s+баг",
-    ],
-    "link_login": [
-        r"привяж", r"отвяж",
-        r"(привязать|отвязать|проверить)\s+логин",
-        r"линк\w*\s+логин",
-    ],
-    "get_logins_list": [
-        r"логин", r"список\s+логин", r"привязк",
-        r"(покажи|дай|глянь|скинь)\s+логин",
-        r"кто\s+(не\s+)?привязан",
-        r"без\s+логин",
-        r"непривязан",
-    ],
-    "switch_mode": [
-        r"режим", r"наблюдени",
-        r"переключ\w*\s+(режим|на|в)",
-        r"рабоч\w+\s+режим", r"observe",
-        r"(включи|выключи|активируй)\s+(бот|режим)",
-        r"(уйди|иди)\s+в\s+(наблюд|тень|спячк)",
-    ],
-}
-
-_TOOL_BY_NAME = {t["name"]: t for t in ALL_TOOLS}
-
-# Предкомпилированные regex для match_tools
-_TOOL_PATTERNS: dict[str, list[re.Pattern]] = {
-    name: [re.compile(kw) for kw in keywords]
-    for name, keywords in TOOL_KEYWORDS.items()
-}
-
-# Роли → запрещённые tools
-_ROLE_EXCLUDE: dict[str, set[str]] = {
-    "owner":  set(),
-    "admin":  {"manage_admin", "manage_tracker"},
-    "tracker": set(TOOL_KEYWORDS.keys()) - {"get_tester_stats", "get_rating", "award_points", "award_points_bulk"},
-    "tester": set(TOOL_KEYWORDS.keys()) - {"get_tester_stats", "get_rating"},
-}
 
 
 def get_tools_for_role(role: str) -> list:
@@ -471,20 +314,3 @@ def get_tools_for_role(role: str) -> list:
         return [t for t in ALL_TOOLS if t["name"] in tracker_tools]
     tester_tools = ["get_tester_stats", "get_rating"]
     return [t for t in ALL_TOOLS if t["name"] in tester_tools]
-
-
-def match_tools(text: str, role: str) -> list:
-    """Возвращает только tools, чьи ключевые слова совпали с текстом."""
-    exclude = _ROLE_EXCLUDE.get(role, set())
-    matched = set()
-    text_lower = text.lower()
-    for tool_name, patterns in _TOOL_PATTERNS.items():
-        if tool_name in exclude:
-            continue
-        for pat in patterns:
-            if pat.search(text_lower):
-                matched.add(tool_name)
-                break
-    if not matched:
-        return []
-    return [_TOOL_BY_NAME[name] for name in matched if name in _TOOL_BY_NAME]

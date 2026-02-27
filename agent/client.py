@@ -1,10 +1,11 @@
 """
-Общий Claude API клиент с throttle для защиты от rate limit.
-Используется из brain.py и services/duplicate_checker.py.
+Общий Claude API клиент с throttle и retry для защиты от rate limit.
+Используется из brain.py и tool_executor.py.
 """
 import time
 import asyncio
 import anthropic
+import httpx
 from config import ANTHROPIC_API_KEY
 
 client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
@@ -26,7 +27,23 @@ async def _throttle():
         _last_request_time = time.time()
 
 
-async def call_claude(**kwargs):
-    """Обёртка над client.messages.create с throttle."""
-    await _throttle()
-    return await client.messages.create(**kwargs)
+async def call_claude(max_retries: int = 3, **kwargs):
+    """Обёртка над client.messages.create с throttle и retry."""
+    for attempt in range(max_retries):
+        await _throttle()
+        try:
+            return await client.messages.create(**kwargs)
+        except anthropic.APIStatusError as e:
+            if e.status_code in (429, 500, 529) and attempt < max_retries - 1:
+                wait = 2 ** attempt * 2  # 2s, 4s, 8s
+                print(f"[CLAUDE-CLIENT] {e.status_code}, retry {attempt + 1} через {wait}с...")
+                await asyncio.sleep(wait)
+            else:
+                raise
+        except (httpx.ConnectError, httpx.ReadTimeout) as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt * 2
+                print(f"[CLAUDE-CLIENT] Network error ({type(e).__name__}), retry {attempt + 1} через {wait}с...")
+                await asyncio.sleep(wait)
+            else:
+                raise

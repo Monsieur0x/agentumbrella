@@ -6,7 +6,10 @@
       "Bash(wc:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(python -m py_compile agent/brain.py)",
+      "Bash(python -m py_compile handlers/message_router.py)",
+      "Bash(python -m py_compile config.py)"
     ]
   }
 }
