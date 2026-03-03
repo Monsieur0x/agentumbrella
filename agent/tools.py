@@ -198,20 +198,6 @@ ALL_TOOLS = [
         }
     },
 
-    # --- УПРАВЛЕНИЕ ТРЕКЕРАМИ ---
-    {
-        "name": "manage_tracker",
-        "description": "Управление трекерами (тестер с правом выдавать баллы). Только руководитель.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["add", "remove", "list"]},
-                "username": {"type": "string"}
-            },
-            "required": ["action"]
-        }
-    },
-
     # --- ОБНОВЛЕНИЕ СПИСКА ТЕСТЕРОВ ---
     {
         "name": "refresh_testers",
@@ -306,11 +292,6 @@ def get_tools_for_role(role: str) -> list:
     if role == "owner":
         return ALL_TOOLS
     if role == "admin":
-        return [t for t in ALL_TOOLS if t["name"] not in ("manage_admin", "manage_tracker")]
-    if role == "tracker":
-        tracker_tools = {"get_tester_stats", "get_rating", "award_points", "award_points_bulk",
-                         "get_team_stats", "get_inactive_testers", "compare_testers",
-                         "get_bug_stats", "get_testers_list"}
-        return [t for t in ALL_TOOLS if t["name"] in tracker_tools]
+        return [t for t in ALL_TOOLS if t["name"] != "manage_admin"]
     tester_tools = ["get_tester_stats", "get_rating"]
     return [t for t in ALL_TOOLS if t["name"] in tester_tools]

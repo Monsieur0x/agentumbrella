@@ -69,7 +69,6 @@ MAX_TOKENS = _int_env("MAX_TOKENS", 2048)
 MAX_TOOL_ROUNDS = _int_env("MAX_TOOL_ROUNDS", 5)
 MAX_HISTORY = {
     "tester": 2,
-    "tracker": 3,
     "admin": 4,
     "owner": 5,
 }

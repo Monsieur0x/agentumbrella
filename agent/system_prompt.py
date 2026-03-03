@@ -15,9 +15,7 @@ def get_system_prompt(context: dict) -> str:
     if role == "owner":
         role_block = "Роль пользователя: руководитель. Все функции доступны."
     elif role == "admin":
-        role_block = "Роль пользователя: админ. Всё кроме управления админами и трекерами."
-    elif role == "tracker":
-        role_block = "Роль пользователя: трекер (тестер с правом начислять баллы). Доступно: начисление/снятие баллов, просмотр статистики и рейтинга. НЕ доступно: варны, задания, баги, публикация рейтинга. Если просят недоступное — скажи что нет прав."
+        role_block = "Роль пользователя: админ. Всё кроме управления админами."
     else:
         # Тестеры не доходят до Claude API (обрабатываются в message_router._handle_tester_commands).
         # Эта ветка — safety net на случай изменения роутинга.
@@ -38,13 +36,6 @@ def get_system_prompt(context: dict) -> str:
 «баллы всем»: award_points_bulk(usernames="all", ...)
 «баллы активным»: get_testers_list → award_points_bulk(usernames=результат)
 «самые активные» → get_rating | «бездельники / афк» → get_inactive_testers
-</составные_команды>
-"""
-    elif role == "tracker":
-        role_sections = """
-<составные_команды>
-«баллы всем»: award_points_bulk(usernames="all", ...)
-«баллы активным»: get_testers_list → award_points_bulk(usernames=результат)
 </составные_команды>
 """
     else:
