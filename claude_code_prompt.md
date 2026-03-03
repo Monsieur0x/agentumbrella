@@ -15,7 +15,7 @@
 - `services/duplicate_checker.py` — проверка дублей багов через Claude
 - `config.py` — конфиг, модели, лимиты
 
-Роли: owner (руководитель) → admin → tracker → tester. Каждая роль видит только свои tools.
+Роли: owner (руководитель) → admin → tester. Каждая роль видит только свои tools.
 
 ## Известные проблемы (из анализа)
 

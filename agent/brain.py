@@ -33,6 +33,11 @@ def clear_history(caller_id: int):
     _conversation_history.pop(caller_id, None)
 
 
+def clear_all_history():
+    """Полный сброс всей памяти бота — все диалоги всех пользователей."""
+    _conversation_history.clear()
+
+
 def _trim_history(history: list, max_messages: int):
     """Обрезает историю до max_messages сообщений."""
     while len(history) > max_messages:

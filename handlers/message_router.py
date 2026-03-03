@@ -390,6 +390,8 @@ async def _handle_draft_task_edit(message: Message, user) -> bool:
     return True
 
 
+_RESET_MEMORY_KEYWORDS = ("сброс памяти", "очисти память", "ресет памяти", "reset memory", "забудь всё")
+
 _WEEEK_OFF_KEYWORDS = ("отключи вик", "выключи вик", "стоп вик")
 _WEEEK_ON_KEYWORDS = ("включи вик", "запусти вик", "старт вик")
 
@@ -424,6 +426,13 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
         config.BOT_MODE = "chat"
         print(f"[MODE] Переключён на chat by @{user.username}")
         await message.reply("💬 Режим переключён: <b>чат</b>. Свободная болтовня, функции координатора отключены.", parse_mode="HTML")
+        return True
+
+    if any(kw in text for kw in _RESET_MEMORY_KEYWORDS):
+        from agent.brain import clear_all_history
+        clear_all_history()
+        print(f"[MEMORY] Полный сброс памяти by @{user.username}")
+        await message.reply("🧹 Память полностью очищена. Все диалоги сброшены.", parse_mode="HTML")
         return True
 
     return False
