@@ -2,7 +2,7 @@
 CRUD-операции с багами (JSON-хранилище).
 """
 from datetime import datetime, timedelta
-from json_store import async_load, async_save, async_update, BUGS_FILE, TESTERS_FILE
+from json_store import async_load, async_save, async_update, BUGS_FILE, TESTERS_FILE, POINTS_LOG_FILE
 
 
 async def create_bug(tester_id: int, message_id: int,
@@ -103,7 +103,7 @@ async def get_recent_bugs(limit: int = 50) -> list[dict]:
 
 
 async def delete_bug(bug_id: int) -> bool:
-    """Удаляет баг и декрементирует счётчик тестера (если баг был accepted)."""
+    """Удаляет баг, откатывает баллы и декрементирует счётчик тестера (если баг был accepted)."""
     data = await async_load(BUGS_FILE)
     items = data.get("items", {})
     key = str(bug_id)
@@ -113,6 +113,8 @@ async def delete_bug(bug_id: int) -> bool:
     bug = items[key]
     tester_id = bug.get("tester_id")
     was_accepted = bug.get("status") == "accepted"
+    points_awarded = bug.get("points_awarded", 0)
+    display_number = bug.get("display_number") or bug_id
 
     del items[key]
     await async_save(BUGS_FILE, data)
@@ -121,31 +123,70 @@ async def delete_bug(bug_id: int) -> bool:
         from json_store import async_update as _au
         tid_key = str(tester_id)
 
-        def dec_bugs(tdata):
+        # Откатываем total_bugs и total_points
+        def rollback_tester(tdata):
             if tid_key in tdata:
                 tdata[tid_key]["total_bugs"] = max(0, tdata[tid_key].get("total_bugs", 0) - 1)
+                tdata[tid_key]["total_points"] = max(0, tdata[tid_key].get("total_points", 0) - points_awarded)
             return tdata
 
-        await _au(TESTERS_FILE, dec_bugs)
+        await _au(TESTERS_FILE, rollback_tester)
+
+        # Удаляем запись из points_log
+        reason_pattern = f"Баг #{display_number} принят"
+
+        def remove_points_log(pdata):
+            items_list = pdata.get("items", [])
+            pdata["items"] = [
+                e for e in items_list
+                if not (e.get("tester_id") == tester_id
+                        and e.get("source") == "bug"
+                        and e.get("reason", "") == reason_pattern)
+            ]
+            return pdata
+
+        await _au(POINTS_LOG_FILE, remove_points_log)
 
     return True
 
 
 async def delete_all_bugs() -> int:
-    """Удаляет все баги и обнуляет счётчики total_bugs."""
+    """Удаляет все баги, обнуляет total_bugs и откатывает баллы за принятые баги."""
     data = await async_load(BUGS_FILE)
-    count = len(data.get("items", {}))
+    items = data.get("items", {})
+    count = len(items)
+
+    # Считаем баллы за принятые баги по тестерам для отката
+    accepted_points = {}
+    for b in items.values():
+        if b.get("status") == "accepted" and b.get("tester_id"):
+            tid = b["tester_id"]
+            accepted_points[tid] = accepted_points.get(tid, 0) + b.get("points_awarded", 0)
+
     data["items"] = {}
     await async_save(BUGS_FILE, data)
 
     from json_store import async_update as _au
 
+    # Откатываем total_bugs и total_points
     def reset_bugs(tdata):
         for key in tdata:
             tdata[key]["total_bugs"] = 0
+            tid = tdata[key].get("telegram_id")
+            rollback = accepted_points.get(tid, 0)
+            if rollback > 0:
+                tdata[key]["total_points"] = max(0, tdata[key].get("total_points", 0) - rollback)
         return tdata
 
     await _au(TESTERS_FILE, reset_bugs)
+
+    # Удаляем записи points_log с source="bug"
+    def remove_bug_points_log(pdata):
+        pdata["items"] = [e for e in pdata.get("items", []) if e.get("source") != "bug"]
+        return pdata
+
+    await _au(POINTS_LOG_FILE, remove_bug_points_log)
+
     return count
 
 

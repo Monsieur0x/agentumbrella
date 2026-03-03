@@ -83,7 +83,7 @@ async def _dispatch(name: str, args: dict, caller_id: int = None, topic: str = "
 
     # === АНАЛИТИКА ===
     if name == "get_tester_stats":
-        return await _get_tester_stats(args["username"])
+        return await _get_tester_stats(args["username"], caller_id)
 
     elif name == "get_team_stats":
         return await _get_team_stats(args.get("period", "all"))
@@ -250,8 +250,12 @@ async def _get_testers_list(include_inactive: bool = False) -> dict:
     }
 
 
-async def _get_tester_stats(username: str) -> dict:
+async def _get_tester_stats(username: str, caller_id: int = None) -> dict:
+    from models.tester import get_tester_by_id
     tester = await get_tester_by_username(_normalize_username(username))
+    if not tester and caller_id:
+        # Фоллбэк: если username не найден, пробуем по telegram_id вызывающего
+        tester = await get_tester_by_id(caller_id)
     if not tester:
         return {"error": f"Тестер @{_normalize_username(username)} не найден"}
     return {
@@ -285,6 +289,8 @@ async def _get_team_stats(period: str) -> dict:
         items = points_data.get("items", [])
 
         period_points_map = {}
+        period_games_map = {}
+        period_bugs_map = {}
         for entry in items:
             created = entry.get("created_at", "")
             try:
@@ -294,18 +300,29 @@ async def _get_team_stats(period: str) -> dict:
             if dt >= cutoff:
                 tid = entry.get("tester_id")
                 period_points_map[tid] = period_points_map.get(tid, 0) + entry.get("amount", 0)
+                source = entry.get("source", "")
+                if source == "game":
+                    period_games_map[tid] = period_games_map.get(tid, 0) + 1
+                elif source == "bug":
+                    period_bugs_map[tid] = period_bugs_map.get(tid, 0) + 1
 
         total_points = sum(period_points_map.values())
+        total_games = sum(period_games_map.values())
 
         for t in testers:
             t["_period_points"] = period_points_map.get(t["telegram_id"], 0)
+            t["_period_games"] = period_games_map.get(t["telegram_id"], 0)
+            t["_period_bugs"] = period_bugs_map.get(t["telegram_id"], 0)
         testers_sorted = sorted(testers, key=lambda t: t["_period_points"], reverse=True)
         top3 = testers_sorted[:3]
     else:
         total_points = sum(t["total_points"] for t in testers)
+        total_games = sum(t["total_games"] for t in testers)
+        for t in testers:
+            t["_period_points"] = t["total_points"]
+            t["_period_games"] = t["total_games"]
+            t["_period_bugs"] = t["total_bugs"]
         top3 = testers[:3] if testers else []
-
-    total_games = sum(t["total_games"] for t in testers)
 
     return {
         "period": period,
@@ -315,8 +332,8 @@ async def _get_team_stats(period: str) -> dict:
         "bugs_stats": bugs,
         "top_3": [
             {"username": _tag(t["username"]),
-             "points": t.get("_period_points", t["total_points"]),
-             "bugs": t["total_bugs"], "games": t["total_games"]}
+             "points": t["_period_points"],
+             "bugs": t["_period_bugs"], "games": t["_period_games"]}
             for t in top3
         ],
         "average_points": round(total_points / len(testers), 1) if testers else 0,
