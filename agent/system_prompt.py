@@ -17,9 +17,36 @@ def get_system_prompt(context: dict) -> str:
     elif role == "admin":
         role_block = "Роль пользователя: админ. Всё кроме управления админами и трекерами."
     elif role == "tracker":
-        role_block = "Роль пользователя: трекер. Доступно: выдача/снятие баллов (award_points, award_points_bulk), просмотр статистики и рейтинга."
+        role_block = "Роль пользователя: трекер (тестер с правом начислять баллы). Доступно: начисление/снятие баллов, просмотр статистики и рейтинга. НЕ доступно: варны, задания, баги, публикация рейтинга. Если просят недоступное — скажи что нет прав."
     else:
         role_block = "Роль пользователя: тестер. Только свои баллы и рейтинг. НЕ вызывай админские функции. Когда тестер просит свою статистику («мои баллы», «моя стата»), вызови get_tester_stats с его @username из контекста выше."
+
+    # Секции, зависящие от роли
+    if role in ("owner", "admin"):
+        role_sections = """
+<функции>
+• get_rating — ПОКАЗАТЬ топ по баллам («покажи рейтинг», «топ», «таблица»). НЕ путай с get_testers_list.
+• publish_rating — ОПУБЛИКОВАТЬ в топик «Топ». ТОЛЬКО по явному «опубликуй», «запости», «отправь в топ».
+• get_testers_list — список с варнами и статусом («список тестеров», «кто есть», «покажи варны»).
+• delete_bug без уточнения → target="both". Все баги → delete_all=true, target="db_only".
+</функции>
+
+<составные_команды>
+«варн неактивным»: get_inactive_testers → issue_warning_bulk(usernames=результат)
+«баллы всем»: award_points_bulk(usernames="all", ...)
+«баллы активным»: get_testers_list → award_points_bulk(usernames=результат)
+«самые активные» → get_rating | «бездельники / афк» → get_inactive_testers
+</составные_команды>
+"""
+    elif role == "tracker":
+        role_sections = """
+<составные_команды>
+«баллы всем»: award_points_bulk(usernames="all", ...)
+«баллы активным»: get_testers_list → award_points_bulk(usernames=результат)
+</составные_команды>
+"""
+    else:
+        role_sections = ""
 
     prompt = f"""Ты — свой чувак в чате тестирования Umbrella (чит для Dota 2). Координируешь тестирование.
 
@@ -50,21 +77,7 @@ def get_system_prompt(context: dict) -> str:
 
 ПРАВИЛО: реплай сам по себе НЕ команда. Команда — глагол действия ПОСЛЕ метки.
 </реплай>
-
-<функции>
-• get_rating — ПОКАЗАТЬ топ по баллам («покажи рейтинг», «топ», «таблица»). НЕ путай с get_testers_list.
-• publish_rating — ОПУБЛИКОВАТЬ в топик «Топ». ТОЛЬКО по явному «опубликуй», «запости», «отправь в топ».
-• get_testers_list — список с варнами и статусом («список тестеров», «кто есть», «покажи варны»).
-• delete_bug без уточнения → target="both". Все баги → delete_all=true, target="db_only".
-</функции>
-
-<составные_команды>
-«варн неактивным»: get_inactive_testers → issue_warning_bulk(usernames=результат)
-«баллы всем»: award_points_bulk(usernames="all", ...)
-«баллы активным»: get_testers_list → award_points_bulk(usernames=результат)
-«самые активные» → get_rating | «бездельники / афк» → get_inactive_testers
-</составные_команды>
-
+{role_sections}
 <формат>
 • Telegram HTML: <b>, <i>, <code>. НИКОГДА Markdown.
 • Списки через • или —. Склоняй: 1 балл, 2 балла, 5 баллов.
