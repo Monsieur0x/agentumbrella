@@ -428,14 +428,24 @@ async def _handle_mode_toggle(message: Message, user) -> bool:
         await message.reply("💬 Режим переключён: <b>чат</b>. Свободная болтовня, функции координатора отключены.", parse_mode="HTML")
         return True
 
-    if any(kw in text for kw in _RESET_MEMORY_KEYWORDS):
-        from agent.brain import clear_all_history
-        clear_all_history()
-        print(f"[MEMORY] Полный сброс памяти by @{user.username}")
-        await message.reply("🧹 Память полностью очищена. Все диалоги сброшены.", parse_mode="HTML")
-        return True
-
     return False
+
+
+async def _handle_memory_reset(message: Message, user) -> bool:
+    """Сброс памяти бота. Доступно руководителю и админам."""
+    if not message.text:
+        return False
+    text = message.text.lower().strip()
+    if not any(kw in text for kw in _RESET_MEMORY_KEYWORDS):
+        return False
+    role = await get_role(user.id)
+    if role not in ("owner", "admin"):
+        return False
+    from agent.brain import clear_all_history
+    clear_all_history()
+    print(f"[MEMORY] Полный сброс памяти by @{user.username}")
+    await message.reply("🧹 Память полностью очищена. Все диалоги сброшены.", parse_mode="HTML")
+    return True
 
 
 
