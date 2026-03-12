@@ -25,6 +25,9 @@ _GAMEMODE_POINTS_KEY = {
 
 async def _handle_game(request: web.Request) -> web.Response:
     """Обработчик POST / — принимает JSON от Lua-скрипта."""
+    # NOTE: подсчёт баллов за игры временно отключён
+    return web.json_response({"status": "disabled"})
+
     try:
         data = await request.json()
     except (json.JSONDecodeError, Exception):
