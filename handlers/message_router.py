@@ -320,7 +320,7 @@ async def handle_group_message(message: Message, bot: Bot):
     if reply_user and not reply_user.is_bot and reply_user.id != user.id:
         if not _is_reaction(message.text):
             reply_username = reply_user.username or reply_user.full_name or str(reply_user.id)
-            text_to_send = f"[ответ на сообщение @{reply_username}] {message.text}"
+            text_to_send = f"(контекст: реплай на @{reply_username}) {message.text}"
 
     # Показываем «печатает...»
     try:
